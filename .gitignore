@@ -1,0 +1,12 @@
+# 依赖与构建缓存
+node_modules/
+.electron-cache/
+
+# 打包产物（发布用 GitHub Releases 存放）
+release/
+
+# 编辑器与系统杂项
+.vscode/
+*.log
+Thumbs.db
+.DS_Store

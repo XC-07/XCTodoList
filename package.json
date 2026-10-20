@@ -1,0 +1,7 @@
+{
+  "name": "todolist",
+  "productName": "待办清单",
+  "version": "1.0.0",
+  "description": "按天日程的轻量待办清单（本地存储，零依赖 Web 内核 + Electron 壳）",
+  "main": "electron/main.js"
+}
