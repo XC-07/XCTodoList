@@ -186,19 +186,19 @@
       <h2 class="modal-title">设置</h2>
       <div class="setting-group">
         <label class="setting-row">
-          <input type="checkbox" id="setSound">
           <span class="setting-text">
             <span class="setting-name">完成音效</span>
             <span class="setting-desc">勾选任务时播放提示音</span>
           </span>
+          <input type="checkbox" id="setSound">
         </label>
         <div class="setting-electron-only hidden" id="electronOnlyFields">
           <label class="setting-row">
-            <input type="checkbox" id="setNotify">
             <span class="setting-text">
               <span class="setting-name">桌面通知</span>
               <span class="setting-desc">任务到截止时间时弹出系统通知</span>
             </span>
+            <input type="checkbox" id="setNotify">
           </label>
           <div class="setting-row select-row">
             <span class="setting-text">
@@ -210,6 +210,25 @@
               <option value="quit">直接退出应用</option>
             </select>
           </div>
+        </div>
+      </div>
+      <div class="setting-changelog">
+        <div class="changelog-title">更新日志</div>
+        <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v1.0.1</span><span class="cl-date">2026-10-20</span></div>
+          <ul>
+            <li>修复：重复任务完成后不再生成下一期、任务凭空消失的问题</li>
+            <li>改进：已完成的任务会保留在完成当天的栏目中</li>
+            <li>新增：标签筛选栏超过一行时可折叠，并支持多选筛选（任一命中）</li>
+            <li>调整：设置页各行版式对齐（文字靠左、控件靠右）</li>
+          </ul>
+        </div>
+        <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v1.0.0</span><span class="cl-date">2026-10-16</span></div>
+          <ul>
+            <li>首发：按天日程、重复任务、标签 / 优先级、主题切换、导入导出</li>
+            <li>Electron 桌面版：托盘驻留、右键菜单、到点桌面通知、设置页</li>
+          </ul>
         </div>
       </div>
       <div class="setting-version" id="versionInfo"></div>

@@ -18,7 +18,9 @@ let settings = Object.assign(
   loadSettings()
 );
 let currentFilter = "all";
-let activeTag = null;        // 当前标签筛选
+let activeTags = new Set();  // 当前标签筛选（多选，任一命中）
+let tagsExpanded = false;    // 标签栏是否展开
+let tagsOverflow = false;    // 标签栏是否超过一行（决定折叠按钮）
 let searchQuery = "";        // 搜索关键词（小写）
 let editingId = null;        // 当前编辑的任务 id（null 表示新建）
 let confirmCallback = null;  // 确认弹窗回调
@@ -72,6 +74,8 @@ function normalizeTask(t) {
       ? [...new Set(t.repeatDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
       : [],
     createdAt: t.createdAt || Date.now(),
+    // completedAt: 完成时刻（毫秒），用于让已完成任务保留在完成当天的栏目
+    completedAt: typeof t.completedAt === "number" ? t.completedAt : null,
     // 重复任务链的内部记录：generatedFrom=由哪个任务生成；generatedNextId=完成时生成的下一期
     generatedFrom: t.generatedFrom || null,
     generatedNextId: t.generatedNextId || null,
@@ -126,6 +130,12 @@ function isDueToday(task) {
 
 function pad(n) {
   return String(n).padStart(2, "0");
+}
+
+// 毫秒时间戳 → 本地 "YYYY-MM-DD"
+function tsKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function formatDue(due) {
@@ -248,13 +258,15 @@ function inSelectedDay(t) {
   const D = selectedDate;
   const s = t.start;
   const e = t.due ? dateKeyOf(t.due) : null;
+  // 已完成的任务额外保留在"完成当天"的栏目里，不会点完就凭空消失
+  const doneHere = t.done && t.completedAt && tsKey(t.completedAt) === D;
   if (!s && !e) return true; // 未安排日期的任务：每天都显示（列表末尾单独分组）
-  if (s && !e) return t.done ? D === s : D >= s; // 只有开始日期：从开始日起持续显示，完成后只留在开始日
+  if (s && !e) return t.done ? D === s || doneHere : D >= s; // 只有开始日期：从开始日起持续显示
   // 有截止时间（可能还有开始日期）
   const inWindow = s ? D >= s && D <= e : D === e;
   // 未完成且已过期的任务，额外显示在"今天"这一栏，避免被漏掉
   const overdueOnToday = !t.done && D === todayKey() && e < D;
-  return inWindow || overdueOnToday;
+  return inWindow || overdueOnToday || doneHere;
 }
 
 function matchTask(t) {
@@ -265,7 +277,7 @@ function matchTask(t) {
     case "completed": if (!t.done) return false; break;
     case "overdue": if (!isOverdue(t)) return false; break;
   }
-  if (activeTag && !t.tags.includes(activeTag)) return false;
+  if (activeTags.size && !t.tags.some((x) => activeTags.has(x))) return false;
   if (searchQuery) {
     const inTitle = t.title.toLowerCase().includes(searchQuery);
     const inNote = t.note.toLowerCase().includes(searchQuery);
@@ -346,7 +358,7 @@ function renderList() {
 function emptyText() {
   if (searchQuery) return "没有匹配的任务";
   if (tasks.length === 0) return "还没有任务，点击「新建任务」开始吧";
-  if (activeTag) return `标签「${activeTag}」下暂无任务`;
+  if (activeTags.size) return `标签「${[...activeTags].join("、")}」下暂无任务`;
   switch (currentFilter) {
     case "active": return "这一天没有未完成的任务，干得漂亮";
     case "completed": return "这一天还没有已完成的任务";
@@ -375,28 +387,49 @@ function renderCounts() {
 function renderTagChips() {
   const box = $("#tagChips");
   const tags = [...new Set(tasks.flatMap((t) => t.tags))].sort();
-  if (activeTag && !tags.includes(activeTag)) activeTag = null; // 标签已不存在
+  for (const tag of [...activeTags]) if (!tags.includes(tag)) activeTags.delete(tag); // 标签已不存在
   if (tags.length === 0) {
     box.classList.add("hidden");
+    box.classList.remove("collapsed");
     box.innerHTML = "";
+    tagsExpanded = false;
+    tagsOverflow = false;
     return;
   }
   box.classList.remove("hidden");
+  box.classList.remove("collapsed");
   box.innerHTML = "";
   const label = document.createElement("span");
   label.className = "chip-label";
-  label.textContent = "按标签筛选：";
+  label.textContent = "按标签筛选（可多选）：";
   box.appendChild(label);
   for (const tag of tags) {
     const chip = document.createElement("button");
     chip.type = "button";
-    chip.className = "tag-chip" + (activeTag === tag ? " active" : "");
+    chip.className = "tag-chip" + (activeTags.has(tag) ? " active" : "");
     chip.textContent = `# ${tag}`;
     chip.addEventListener("click", () => {
-      activeTag = activeTag === tag ? null : tag;
+      if (activeTags.has(tag)) activeTags.delete(tag);
+      else activeTags.add(tag);
       render();
     });
     box.appendChild(chip);
+  }
+  // 超过一行时折叠，提供展开/收起按钮
+  if (!tagsExpanded) {
+    box.classList.add("collapsed");
+    tagsOverflow = box.scrollHeight > box.clientHeight + 4;
+  }
+  if (tagsOverflow) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "tag-toggle";
+    toggle.textContent = tagsExpanded ? "收起 ▴" : "展开 ▾";
+    toggle.addEventListener("click", () => {
+      tagsExpanded = !tagsExpanded;
+      renderTagChips();
+    });
+    box.appendChild(toggle);
   }
 }
 
@@ -596,12 +629,20 @@ function toggleDone(t, done, cb) {
   }
 
   t.done = done;
+  t.completedAt = done ? Date.now() : null;
 
-  if (done && t.repeat !== "none" && t.due) {
+  if (done && t.repeat !== "none") {
+    // 历史数据可能存在没有截止时间的重复任务：以今天 23:59 为锚点生成下一期
+    let anchor = t.due;
+    if (!anchor) {
+      const d = new Date();
+      d.setHours(23, 59, 0, 0);
+      anchor = toLocalInputValue(d);
+    }
     // 幂等生成：本期完成生成的"下一期"已存在时不再重复生成，
     // 防止反复勾选/取消堆积出多个相同副本
     if (!t.generatedNextId || !tasks.find((x) => x.id === t.generatedNextId)) {
-      const nextDueStr = nextDue(t.due, t.repeat, t.repeatDays);
+      const nextDueStr = nextDue(anchor, t.repeat, t.repeatDays);
       const next = normalizeTask({
         ...t,
         id: uid(),
@@ -609,6 +650,7 @@ function toggleDone(t, done, cb) {
         // 新一期出现在它自己的截止日期那一栏
         start: t.start ? dateKeyOf(nextDueStr) : null,
         done: false,
+        completedAt: null,
         createdAt: Date.now(),
         generatedFrom: t.id,
         generatedNextId: null,
@@ -749,6 +791,11 @@ $("#taskForm").addEventListener("submit", (e) => {
   const repeatDays = repeat === "weekly" ? readWeekdayPicker() : [];
   if (repeat === "weekly" && repeatDays.length === 0) {
     $("#repeatDaysError").classList.remove("hidden");
+    return;
+  }
+  // 重复任务必须有截止时间，否则完成后无法推算下一期
+  if (repeat !== "none" && !dueDate) {
+    toast("重复任务需要设置截止日期");
     return;
   }
   const tags = [
@@ -1174,7 +1221,7 @@ function openSettingsModal() {
     });
   } else {
     $("#electronOnlyFields").classList.add("hidden");
-    $("#versionInfo").textContent = "待办清单 v1.0.0（Web 版 · 浏览器模式，托盘与桌面通知不可用）";
+    $("#versionInfo").textContent = "待办清单 v1.0.1（Web 版 · 浏览器模式，托盘与桌面通知不可用）";
   }
   $("#settingsModal").classList.remove("hidden");
 }
@@ -1351,7 +1398,7 @@ function checkReminders() {
 $("#reminderView").addEventListener("click", () => {
   searchQuery = "";
   $("#searchInput").value = "";
-  activeTag = null;
+  activeTags.clear();
   selectedDate = todayKey();
   setFilter(tasks.some(isOverdue) ? "overdue" : "all");
   $("#reminderBanner").classList.add("hidden");

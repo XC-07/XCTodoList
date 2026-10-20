@@ -1,7 +1,39 @@
 {
   "name": "todolist",
   "productName": "待办清单",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "按天日程的轻量待办清单（本地存储，零依赖 Web 内核 + Electron 壳）",
-  "main": "electron/main.js"
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.todolist.desktop",
+    "productName": "待办清单",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "index.html",
+      "app.js",
+      "style.css",
+      "electron/**",
+      "assets/**",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.png",
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "待办清单-${version}-Portable.exe"
+    }
+  }
 }
