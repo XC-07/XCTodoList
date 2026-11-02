@@ -14,11 +14,13 @@ const SETTINGS_KEY = "todo.settings.v1";
 
 let tasks = loadTasks();
 let settings = Object.assign(
-  { theme: "light", sortMode: "due", sound: true, notifications: true, closeBehavior: "tray" },
+  { theme: "light", sortMode: "due", sound: true, notifications: true, closeBehavior: "tray", style: "things", accent: "blue" },
   loadSettings()
 );
+if (!["things", "soft"].includes(settings.style)) settings.style = "things";
 let currentFilter = "all";
 let activeTags = new Set();  // 当前标签筛选（多选，任一命中）
+let tagsOpen = false;        // 标签行是否被用户展开
 let tagsExpanded = false;    // 标签栏是否展开
 let tagsOverflow = false;    // 标签栏是否超过一行（决定折叠按钮）
 let searchQuery = "";        // 搜索关键词（小写）
@@ -318,18 +320,12 @@ const EDIT_SVG =
   '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
 const TRASH_SVG =
   '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-const FLAG_SVG =
-  '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><path d="M5 3a1 1 0 0 1 1 1v1.1c1.9-.6 3.6-1.4 5.5-1.4 2.5 0 4 1.3 6.5 1.3 1 0 1.8-.2 2.5-.5a.8.8 0 0 1 1 .8v8.2c0 .4-.2.7-.6.9-.9.4-1.9.6-2.9.6-2.5 0-4-1.3-6.5-1.3-1.9 0-3.6.7-5.5 1.4V21a1 1 0 1 1-2 0V4a1 1 0 0 1 1-1Z"/></svg>';
 const REPEAT_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
 
-const SUN_SVG =
-  '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>';
-const MOON_SVG =
-  '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
-
 function render() {
   $("#dateLabelText").textContent = dayLabel(selectedDate);
+  $("#todayBtn").classList.toggle("hidden", selectedDate === todayKey());
   renderList();
   renderCounts();
   renderTagChips();
@@ -357,7 +353,7 @@ function renderList() {
 
 function emptyText() {
   if (searchQuery) return "没有匹配的任务";
-  if (tasks.length === 0) return "还没有任务，点击「新建任务」开始吧";
+  if (tasks.length === 0) return "还没有任务，点右下角 + 添加";
   if (activeTags.size) return `标签「${[...activeTags].join("、")}」下暂无任务`;
   switch (currentFilter) {
     case "active": return "这一天没有未完成的任务，干得漂亮";
@@ -386,9 +382,13 @@ function renderCounts() {
 
 function renderTagChips() {
   const box = $("#tagChips");
+  const btn = $("#tagToggleBtn");
   const tags = [...new Set(tasks.flatMap((t) => t.tags))].sort();
   for (const tag of [...activeTags]) if (!tags.includes(tag)) activeTags.delete(tag); // 标签已不存在
-  if (tags.length === 0) {
+  btn.classList.toggle("disabled", tags.length === 0);
+  btn.classList.toggle("on", tagsOpen || activeTags.size > 0);
+  // 标签行按需出现：用户点开，或正在按标签筛选
+  if (tags.length === 0 || (!tagsOpen && activeTags.size === 0)) {
     box.classList.add("hidden");
     box.classList.remove("collapsed");
     box.innerHTML = "";
@@ -435,8 +435,8 @@ function renderTagChips() {
 
 function renderClearDoneBtn() {
   const n = tasks.filter((t) => t.done && inSelectedDay(t)).length;
-  const btn = $("#clearDoneBtn");
-  btn.classList.toggle("hidden", n === 0);
+  const row = $("#clearDoneRow");
+  if (row) row.classList.toggle("hidden", n === 0);
   $("#clearDoneCount").textContent = n > 0 ? `(${n})` : "";
 }
 
@@ -453,7 +453,11 @@ function iconButton(kind, title) {
 function renderTask(t) {
   const li = document.createElement("li");
   li.className =
-    "task-item" + (t.done ? " done" : "") + (isOverdue(t) ? " overdue" : "");
+    "task-item" +
+    (t.done ? " done" : "") +
+    (isOverdue(t) ? " overdue" : "") +
+    (t.priority !== "none" ? " p-" + t.priority : "");
+  if (t.priority !== "none") li.title = `优先级：${PRIORITY_LABEL[t.priority]}`;
   li.dataset.id = t.id;
   li.draggable = true;
 
@@ -470,16 +474,9 @@ function renderTask(t) {
   const main = document.createElement("div");
   main.className = "task-main";
 
-  // 标题行（含优先级旗帜）
+  // 标题行（优先级用卡片左侧色条表达，见 CSS .p-*）
   const titleRow = document.createElement("div");
   titleRow.className = "task-title-row";
-  if (t.priority !== "none") {
-    const flag = document.createElement("span");
-    flag.className = `priority-flag p-${t.priority}`;
-    flag.innerHTML = FLAG_SVG;
-    flag.title = `优先级：${PRIORITY_LABEL[t.priority]}`;
-    titleRow.appendChild(flag);
-  }
   const title = document.createElement("span");
   title.className = "task-title";
   title.textContent = t.title;
@@ -1213,6 +1210,8 @@ function openSettingsModal() {
   $("#setSound").checked = settings.sound !== false;
   $("#setNotify").checked = settings.notifications !== false;
   $("#setCloseBehavior").value = settings.closeBehavior === "quit" ? "quit" : "tray";
+  renderStyleSeg();
+  renderAccentSwatches();
   if (ELECTRON) {
     $("#electronOnlyFields").classList.remove("hidden");
     ELECTRON.getVersion().then((v) => {
@@ -1221,7 +1220,7 @@ function openSettingsModal() {
     });
   } else {
     $("#electronOnlyFields").classList.add("hidden");
-    $("#versionInfo").textContent = "待办清单 v1.0.1（Web 版 · 浏览器模式，托盘与桌面通知不可用）";
+    $("#versionInfo").textContent = "待办清单 v1.1.0（Web 版 · 浏览器模式，托盘与桌面通知不可用）";
   }
   $("#settingsModal").classList.remove("hidden");
 }
@@ -1294,6 +1293,27 @@ $("#searchInput").addEventListener("input", (e) => {
   render();
 });
 
+$("#searchToggleBtn").addEventListener("click", () => {
+  const row = $("#searchRow");
+  const show = row.classList.contains("hidden");
+  row.classList.toggle("hidden", !show);
+  $("#searchToggleBtn").classList.toggle("on", show);
+  if (show) {
+    $("#searchInput").focus();
+  } else if (searchQuery) {
+    $("#searchInput").value = "";
+    searchQuery = "";
+    render();
+  }
+});
+
+/* ---------------- 标签行开合（点标签图标展开，收起时清除筛选） ---------------- */
+$("#tagToggleBtn").addEventListener("click", () => {
+  tagsOpen = !tagsOpen;
+  if (!tagsOpen) activeTags.clear();
+  render();
+});
+
 /* ---------------- 排序方式 ---------------- */
 $("#sortSelect").addEventListener("change", (e) => {
   settings.sortMode = e.target.value;
@@ -1319,16 +1339,114 @@ $("#clearDoneBtn").addEventListener("click", () => {
   );
 });
 
-/* ---------------- 主题切换 ---------------- */
-function applyTheme() {
-  document.documentElement.dataset.theme = settings.theme;
-  $("#themeBtn").innerHTML = settings.theme === "dark" ? SUN_SVG : MOON_SVG;
+/* ---------------- 主题风格 / 主题色 / 深浅色 ---------------- */
+// 两套风格各自的色板：things=单强调色（浅/深各一版），soft=渐变双色
+const ACCENT_PALETTES = {
+  things: [
+    { id: "blue", name: "蓝色", light: "#5a7bd6", dark: "#8aa6e8" },
+    { id: "indigo", name: "靛蓝", light: "#6b62d6", dark: "#9a92ec" },
+    { id: "purple", name: "紫色", light: "#a05fc8", dark: "#c08ee0" },
+    { id: "pink", name: "粉色", light: "#d162a4", dark: "#e893c6" },
+    { id: "red", name: "红色", light: "#d65a5a", dark: "#e88f8f" },
+    { id: "orange", name: "橙色", light: "#dd8544", dark: "#eab07c", ink: true },
+    { id: "yellow", name: "黄色", light: "#c99a2e", dark: "#e3c375", ink: true },
+    { id: "green", name: "绿色", light: "#5aa06b", dark: "#92c7a1" },
+    { id: "teal", name: "青色", light: "#46a3a8", dark: "#83c8cc" },
+    { id: "brown", name: "棕色", light: "#9c7a55", dark: "#c2a179" },
+  ],
+  soft: [
+    { id: "violet", name: "紫蓝", l: ["#6c7ff5", "#a78bfa"], d: ["#8b9bff", "#b79bfa"] },
+    { id: "sunset", name: "粉橙", l: ["#f06292", "#ff9e57"], d: ["#ff8fb0", "#ffb97a"] },
+    { id: "ocean", name: "蓝青", l: ["#4aa3f0", "#34d1c0"], d: ["#6cb8f5", "#5fe3d2"] },
+    { id: "mint", name: "薄荷", l: ["#2fbf87", "#6fd06f"], d: ["#4ad4a4", "#8fe38f"] },
+    { id: "amber", name: "琥珀", l: ["#f5a623", "#f7c948"], d: ["#fbbf5f", "#ffd97a"], ink: true },
+    { id: "rose", name: "玫红", l: ["#ef5f7e", "#e26bc0"], d: ["#ff7d95", "#f08fd0"] },
+  ],
+};
+
+function currentPalette() {
+  return ACCENT_PALETTES[settings.style] || ACCENT_PALETTES.things;
 }
 
-$("#themeBtn").addEventListener("click", () => {
-  settings.theme = settings.theme === "dark" ? "light" : "dark";
+// 把所选主题色注入 CSS 变量（--accent / --accent2 / --grad），全局联动
+function applyStyle() {
+  const root = document.documentElement;
+  root.dataset.style = settings.style;
+  const pal = currentPalette();
+  const c = pal.find((x) => x.id === settings.accent) || pal[0];
+  settings.accent = c.id;
+  const dark = settings.theme === "dark";
+  if (settings.style === "things") {
+    const a = dark ? c.dark : c.light;
+    root.style.setProperty("--accent", a);
+    root.style.setProperty("--accent2", a);
+    root.style.setProperty("--grad", `linear-gradient(135deg, ${a}, ${a})`);
+  } else {
+    const [c1, c2] = dark ? c.d : c.l;
+    root.style.setProperty("--accent", c1);
+    root.style.setProperty("--accent2", c2);
+    root.style.setProperty("--grad", `linear-gradient(135deg, ${c1}, ${c2})`);
+  }
+  // 深色主题下强调色是浅色粉彩，其上的勾/图标/文字需改用深色墨保证对比度
+  root.dataset.accentInk = c.ink || dark ? "1" : "0";
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = settings.theme;
+  const sd = $("#setDark");
+  if (sd) sd.checked = settings.theme === "dark";
+  applyStyle();
+}
+
+// 设置弹窗内的风格分段器 + 色板渲染
+function renderStyleSeg() {
+  for (const b of $("#styleSeg").children) {
+    b.classList.toggle("active", b.dataset.style === settings.style);
+  }
+}
+
+function renderAccentSwatches() {
+  const box = $("#accentSwatches");
+  box.innerHTML = "";
+  const dark = settings.theme === "dark";
+  for (const c of currentPalette()) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch" + (c.id === settings.accent ? " on" : "");
+    b.title = c.name;
+    b.setAttribute("aria-label", c.name);
+    b.style.background =
+      settings.style === "things"
+        ? dark
+          ? c.dark
+          : c.light
+        : `linear-gradient(135deg, ${dark ? c.d[0] : c.l[0]}, ${dark ? c.d[1] : c.l[1]})`;
+    b.addEventListener("click", () => {
+      settings.accent = c.id;
+      saveSettings();
+      applyStyle();
+      renderAccentSwatches();
+    });
+    box.appendChild(b);
+  }
+}
+
+$("#styleSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-style]");
+  if (!b || b.dataset.style === settings.style) return;
+  settings.style = b.dataset.style;
+  if (!currentPalette().some((x) => x.id === settings.accent)) settings.accent = currentPalette()[0].id;
+  saveSettings();
+  applyStyle();
+  renderStyleSeg();
+  renderAccentSwatches();
+});
+
+$("#setDark").addEventListener("change", (e) => {
+  settings.theme = e.target.checked ? "dark" : "light";
   saveSettings();
   applyTheme();
+  renderAccentSwatches();
 });
 
 /* ---------------- 导入 / 导出 ---------------- */

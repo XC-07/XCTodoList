@@ -9,92 +9,68 @@
 </head>
 <body>
   <div class="app">
-    <header class="app-header">
-      <div class="app-title">
-        <span class="logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 12.5l3.5 3.5L17 9"/></svg>
-        </span>
-        <h1>待办清单</h1>
-      </div>
-      <div class="header-actions">
-        <div class="search-box">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-          <input type="text" id="searchInput" placeholder="搜索任务与备注…" autocomplete="off">
-        </div>
-        <button type="button" class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换主题"></button>
-        <button type="button" class="icon-btn" id="exportBtn" title="导出备份" aria-label="导出备份">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    <!-- 第一行：标题 + 日期导航 + 设置 -->
+    <header class="topbar">
+      <div class="tb-title">待办<span class="em">清单</span></div>
+      <div class="datenav">
+        <button type="button" class="dn-arrow" id="prevDayBtn" title="前一天" aria-label="前一天">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
         </button>
-        <button type="button" class="icon-btn" id="importBtn" title="导入备份" aria-label="导入备份">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg>
+        <button type="button" class="dn-label" id="dateLabelBtn" title="打开小日历选择日期"><span id="dateLabelText"></span></button>
+        <button type="button" class="dn-arrow" id="nextDayBtn" title="后一天" aria-label="后一天">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button>
-        <button type="button" class="icon-btn" id="settingsBtn" title="设置" aria-label="设置">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
-        </button>
-        <input type="file" id="importFile" accept=".json,application/json" class="hidden">
-      </div>
-    </header>
-
-    <main class="app-main">
-      <div class="date-bar">
-        <button type="button" class="icon-btn" id="prevDayBtn" title="前一天" aria-label="前一天">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-        </button>
-        <button type="button" class="date-label" id="dateLabelBtn" title="打开小日历选择日期">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M8 3v4M16 3v4M3 10h18"/></svg>
-          <span id="dateLabelText"></span>
-          <svg class="caret" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-        <button type="button" class="icon-btn" id="nextDayBtn" title="后一天" aria-label="后一天">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-        </button>
-        <button type="button" class="btn ghost subtle today-btn" id="todayBtn">回到今天</button>
+        <button type="button" class="today-btn hidden" id="todayBtn">今天</button>
         <div class="calendar-pop hidden" id="calendarPop" role="dialog" aria-label="选择日期"></div>
       </div>
+      <button type="button" class="tb-icon" id="settingsBtn" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+      </button>
+    </header>
 
-      <div class="reminder-banner hidden" id="reminderBanner">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18.3-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-2.7"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-        <span class="reminder-text" id="reminderText"></span>
-        <span class="reminder-spacer"></span>
-        <button type="button" class="banner-btn" id="reminderView">查看</button>
-        <button type="button" class="banner-x" id="reminderClose" aria-label="关闭提醒">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
+    <!-- 第二行：筛选分段器 + 搜索 / 标签入口 -->
+    <div class="filterbar">
+      <nav class="seg" id="filters">
+        <button type="button" data-filter="all" class="active">全部 <span class="count">0</span></button>
+        <button type="button" data-filter="active">未完成 <span class="count">0</span></button>
+        <button type="button" data-filter="completed">已完成 <span class="count">0</span></button>
+        <button type="button" data-filter="overdue">过期 <span class="count">0</span></button>
+      </nav>
+      <span class="fb-spacer"></span>
+      <button type="button" class="fb-icon" id="searchToggleBtn" title="搜索任务" aria-label="搜索">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </button>
+      <button type="button" class="fb-icon" id="tagToggleBtn" title="按标签筛选" aria-label="标签筛选">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22 2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none"/></svg>
+      </button>
+    </div>
 
-      <div class="toolbar">
-        <nav class="filters" id="filters">
-          <button type="button" data-filter="all" class="active">全部 <span class="count">0</span></button>
-          <button type="button" data-filter="active">未完成 <span class="count">0</span></button>
-          <button type="button" data-filter="completed">已完成 <span class="count">0</span></button>
-          <button type="button" data-filter="overdue">过期 <span class="count">0</span></button>
-        </nav>
-        <div class="toolbar-actions">
-          <button type="button" class="btn ghost subtle" id="clearDoneBtn">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            清理已完成 <span id="clearDoneCount"></span>
-          </button>
-          <select id="sortSelect" title="排序方式">
-            <option value="due">按截止时间</option>
-            <option value="priority">按优先级</option>
-            <option value="manual">自定义</option>
-          </select>
-          <button type="button" class="btn primary" id="addTaskBtn">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-            新建任务
-          </button>
-        </div>
-      </div>
+    <div class="search-row hidden" id="searchRow">
+      <input type="text" id="searchInput" placeholder="搜索任务与备注…" autocomplete="off">
+    </div>
 
-      <div class="tag-chips hidden" id="tagChips"></div>
+    <div class="reminder-banner hidden" id="reminderBanner">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18.3-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-2.7"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <span class="reminder-text" id="reminderText"></span>
+      <span class="reminder-spacer"></span>
+      <button type="button" class="banner-btn" id="reminderView">查看</button>
+      <button type="button" class="banner-x" id="reminderClose" aria-label="关闭提醒">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
 
-      <ul class="task-list" id="taskList"></ul>
+    <div class="tag-chips hidden" id="tagChips"></div>
 
-      <div class="empty-state hidden" id="emptyState">
-        <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2.5"/><path d="M9 4.5V3.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 3.5v1"/><path d="M9 10h6M9 13.5h6M9 17h3.5"/></svg>
-        <p class="empty-text">还没有任务</p>
-      </div>
-    </main>
+    <ul class="task-list" id="taskList"></ul>
+
+    <div class="empty-state hidden" id="emptyState">
+      <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2.5"/><path d="M9 4.5V3.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 3.5v1"/><path d="M9 10h6M9 13.5h6M9 17h3.5"/></svg>
+      <p class="empty-text">还没有任务</p>
+    </div>
+
+    <button type="button" class="fab" id="addTaskBtn" title="新建任务" aria-label="新建任务">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
   </div>
 
   <!-- 新建 / 编辑任务弹窗 -->
@@ -184,6 +160,65 @@
   <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true">
     <div class="modal modal-sm">
       <h2 class="modal-title">设置</h2>
+
+      <div class="setting-section">外观</div>
+      <div class="setting-block">
+        <div class="block-head">
+          <span class="setting-name">主题风格</span>
+          <span class="setting-desc">整体视觉风格，随时可切换</span>
+        </div>
+        <div class="seg style-seg" id="styleSeg">
+          <button type="button" data-style="things">极简</button>
+          <button type="button" data-style="soft">柔和</button>
+        </div>
+      </div>
+      <div class="setting-block">
+        <div class="block-head">
+          <span class="setting-name">主题色</span>
+          <span class="setting-desc">勾选框、按钮与选中态的强调色</span>
+        </div>
+        <div class="swatches" id="accentSwatches"></div>
+      </div>
+      <label class="setting-row">
+        <span class="setting-text">
+          <span class="setting-name">深色模式</span>
+          <span class="setting-desc">切换深浅色主题</span>
+        </span>
+        <input type="checkbox" id="setDark">
+      </label>
+
+      <div class="setting-section">数据</div>
+      <div class="setting-row select-row">
+        <span class="setting-text">
+          <span class="setting-name">排序方式</span>
+          <span class="setting-desc">自定义模式可直接拖拽任务</span>
+        </span>
+        <select id="sortSelect" title="排序方式">
+          <option value="due">按截止时间</option>
+          <option value="priority">按优先级</option>
+          <option value="manual">自定义</option>
+        </select>
+      </div>
+      <div class="setting-row action-row" id="clearDoneRow">
+        <span class="setting-text">
+          <span class="setting-name">清理已完成</span>
+          <span class="setting-desc">删除当前日期栏中已完成的任务</span>
+        </span>
+        <button type="button" class="btn ghost subtle" id="clearDoneBtn">清理 <span id="clearDoneCount"></span></button>
+      </div>
+      <div class="setting-row action-row">
+        <span class="setting-text">
+          <span class="setting-name">数据备份</span>
+          <span class="setting-desc">导出 / 导入 JSON 备份文件</span>
+        </span>
+        <span class="row-btns">
+          <button type="button" class="btn ghost subtle" id="exportBtn">导出</button>
+          <button type="button" class="btn ghost subtle" id="importBtn">导入</button>
+        </span>
+      </div>
+      <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+
+      <div class="setting-section">通用</div>
       <div class="setting-group">
         <label class="setting-row">
           <span class="setting-text">
@@ -212,8 +247,19 @@
           </div>
         </div>
       </div>
+
       <div class="setting-changelog">
         <div class="changelog-title">更新日志</div>
+        <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v1.1.0</span><span class="cl-date">2026-11-03</span></div>
+          <ul>
+            <li>新增：两种主题风格「极简」与「柔和」，设置里随时切换</li>
+            <li>新增：主题色色板（极简 10 色 / 柔和 6 组渐变），勾选框、按钮、选中态全局联动</li>
+            <li>调整：界面布局重设计——顶部合并为两行，新建任务改为悬浮按钮</li>
+            <li>调整：搜索收起为图标，标签栏按需展开</li>
+            <li>调整：排序、清理已完成、导入导出收纳进设置</li>
+          </ul>
+        </div>
         <div class="changelog-entry">
           <div class="changelog-head"><span class="cl-ver">v1.0.1</span><span class="cl-date">2026-10-20</span></div>
           <ul>
