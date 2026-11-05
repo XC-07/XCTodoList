@@ -562,7 +562,7 @@ html[data-style="soft"] .tag-pill {
 
 /* ================= 悬浮新建按钮 ================= */
 .fab {
-  position: absolute;
+  position: fixed;
   right: 20px;
   bottom: 24px;
   width: 52px;
