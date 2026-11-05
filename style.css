@@ -776,6 +776,7 @@ html[data-style="soft"] .field textarea { background: color-mix(in srgb, var(--b
   transition: border-color 0.15s;
 }
 .setting-row:hover { border-color: color-mix(in srgb, var(--rule) 30%, var(--muted)); }
+.setting-row .btn { white-space: nowrap; flex-shrink: 0; }
 html[data-style="soft"] .setting-row { background: color-mix(in srgb, var(--bg) 40%, transparent); }
 
 .setting-row input[type="checkbox"] {
@@ -1056,7 +1057,7 @@ html[data-style="soft"] .calendar-pop {
 .task-item.drop-above::before { top: -3px; }
 .task-item.drop-below::after { bottom: -3px; }
 
-/* ================= 小窗口适配（Electron 420×700 竖窗） ================= */
+/* ================= 小窗口适配（Electron 460×700 竖窗，最小宽 420） ================= */
 @media (max-width: 480px) {
   .app { padding: 12px 14px 92px; }
   .tb-title { font-size: 16px; }
