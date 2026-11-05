@@ -55,9 +55,9 @@ let quitting = false;
 /* ---------------- 主窗口 ---------------- */
 function createWindow() {
   win = new BrowserWindow({
-    width: 420,
+    width: 460,
     height: 700,
-    minWidth: 360,
+    minWidth: 420,
     minHeight: 520,
     title: "待办清单",
     icon: path.join(ROOT, "assets", "tray.png"),
