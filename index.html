@@ -26,6 +26,9 @@
       <button type="button" class="tb-icon" id="settingsBtn" title="设置" aria-label="设置">
         <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
       </button>
+      <button type="button" class="tb-icon" id="accountBtn" title="账户中心" aria-label="账户中心">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
     </header>
 
     <!-- 第二行：筛选分段器 + 搜索 / 标签入口 -->
@@ -216,7 +219,7 @@
           <button type="button" class="btn ghost subtle" id="importBtn">导入</button>
         </span>
       </div>
-      <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+      <input type="file" id="importFile" accept=".json,.gz,application/json,application/gzip" class="hidden">
 
       <div class="setting-section">通用</div>
       <div class="setting-group">
@@ -248,8 +251,30 @@
         </div>
       </div>
 
+      <div class="setting-section">请谨慎操作</div>
+      <div class="setting-group">
+        <div class="setting-row action-row">
+          <span class="setting-text">
+            <span class="setting-name">清空所有数据</span>
+            <span class="setting-desc">删除全部任务并清空本地存档，不可撤销</span>
+          </span>
+          <button type="button" class="btn danger" id="clearAllBtn">清空</button>
+        </div>
+      </div>
+
       <div class="setting-changelog">
         <div class="changelog-title">更新日志</div>
+        <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v1.1.1</span><span class="cl-date">2026-11-06</span></div>
+          <ul>
+            <li>新增：账户中心（注册/登录/注销，本地账户模式，昵称即主账号，邮箱/手机号选填）</li>
+            <li>新增：陪伴天数——首次登录锁定起点，此后逐日累加不受任务增删影响</li>
+            <li>新增：备份存档 v3 压缩格式（gzip），体积约为原来的 8%，旧备份照常导入</li>
+            <li>新增：设置页「清空所有数据」</li>
+            <li>改进：任务日期不可早于系统当天；顶栏新增账户入口；隐藏窗口滚动条</li>
+            <li>改进：滑动时仅任务列表滚动，日期导航与筛选栏固定不动</li>
+          </ul>
+        </div>
         <div class="changelog-entry">
           <div class="changelog-head"><span class="cl-ver">v1.1.0.2</span><span class="cl-date">2026-11-03</span></div>
           <ul>
@@ -294,6 +319,95 @@
       <div class="setting-version" id="versionInfo"></div>
       <div class="modal-actions">
         <button type="button" class="btn primary" id="closeSettingsBtn">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 账户中心 -->
+  <div class="modal-backdrop hidden" id="accountModal" role="dialog" aria-modal="true">
+    <div class="modal modal-sm">
+      <h2 class="modal-title">账户中心</h2>
+
+      <!-- 未登录：登录 / 注册 -->
+      <div id="accountGuest">
+        <div class="acct-tabs">
+          <button type="button" class="acct-tab active" data-tab="login">登录</button>
+          <button type="button" class="acct-tab" data-tab="register">注册</button>
+        </div>
+        <form id="accountForm" novalidate>
+          <div class="field" id="acctLoginIdField">
+            <label for="acctEmail" id="acctEmailLabel">邮箱 / 昵称 <span class="required">*</span></label>
+            <input type="text" id="acctEmail" placeholder="你注册时的昵称或邮箱" autocomplete="username">
+            <p class="field-error hidden" id="acctEmailError"></p>
+          </div>
+          <div class="field hidden" id="acctNameField">
+            <label for="acctName">昵称 <span class="required">*</span></label>
+            <input type="text" id="acctName" placeholder="怎么称呼你，登录后用它" maxlength="20" autocomplete="nickname">
+            <p class="field-error hidden" id="acctNameError"></p>
+          </div>
+          <div class="field">
+            <label for="acctPass">密码 <span class="required">*</span></label>
+            <input type="password" id="acctPass" placeholder="至少 6 位" autocomplete="current-password">
+            <p class="field-error hidden" id="acctPassError"></p>
+          </div>
+          <div class="field hidden" id="acctPass2Field">
+            <label for="acctPass2">确认密码 <span class="required">*</span></label>
+            <input type="password" id="acctPass2" placeholder="再输入一次" autocomplete="new-password">
+            <p class="field-error hidden" id="acctPass2Error"></p>
+          </div>
+          <div class="field hidden" id="acctPhoneField">
+            <label for="acctPhone">手机号 <span class="optional">（选填）</span></label>
+            <input type="tel" id="acctPhone" placeholder="11 位手机号" maxlength="11" inputmode="numeric" autocomplete="tel">
+            <p class="field-error hidden" id="acctPhoneError"></p>
+          </div>
+          <div class="field hidden" id="acctCodeField">
+            <label for="acctCode">短信验证码 <span class="optional">（选填）</span></label>
+            <div class="code-row">
+              <input type="text" id="acctCode" placeholder="6 位验证码" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+              <button type="button" class="btn ghost" id="acctSendCodeBtn">获取验证码</button>
+            </div>
+          </div>
+          <div class="field hidden" id="acctEmailRegField">
+            <label for="acctEmailReg">邮箱 <span class="optional">（选填）</span></label>
+            <input type="email" id="acctEmailReg" placeholder="you@example.com" autocomplete="email">
+            <p class="field-error hidden" id="acctEmailRegError"></p>
+          </div>
+          <p class="acct-hint">当前为本地账户模式：信息仅保存在本设备，云端同步与在线账户即将上线</p>
+          <div class="modal-actions">
+            <button type="button" class="btn ghost" data-close-account>取消</button>
+            <button type="submit" class="btn primary" id="acctSubmitBtn">登录</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- 已登录 -->
+      <div id="accountUser" class="hidden">
+        <div class="acct-profile">
+          <div class="acct-avatar" id="acctAvatar"></div>
+          <div class="acct-info">
+            <div class="acct-nick" id="acctNick"></div>
+            <div class="acct-mail" id="acctMail"></div>
+          </div>
+        </div>
+        <div class="acct-stats">
+          <div class="acct-stat"><b id="acctStatTasks">0</b><span>总任务</span></div>
+          <div class="acct-stat"><b id="acctStatDone">0</b><span>已完成</span></div>
+          <div class="acct-stat"><b id="acctStatDays">0</b><span>陪伴天数</span></div>
+        </div>
+        <div class="setting-section">云服务</div>
+        <div class="setting-group">
+          <div class="setting-row">
+            <span class="setting-text">
+              <span class="setting-name">云端同步</span>
+              <span class="setting-desc">压缩存档已就绪，等待云端上线</span>
+            </span>
+            <span class="acct-badge">待开启</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close-account>关闭</button>
+          <button type="button" class="btn danger" id="logoutBtn">退出登录</button>
+        </div>
       </div>
     </div>
   </div>
