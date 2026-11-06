@@ -138,7 +138,14 @@ html[data-style="soft"] body {
 /* ================= 基础 ================= */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* 隐藏滚动条（滚动仍可用），避免 Electron 宽滚动条挤压窄窗口排版 */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
 html, body { height: 100%; }
+
+/* 整页不滚动：body 纵向铺满，仅任务列表内部滚动 */
+body { display: flex; flex-direction: column; overflow: hidden; }
 
 body {
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -157,10 +164,18 @@ input, select, textarea { font-family: inherit; }
 /* ================= 页面骨架 ================= */
 .app {
   position: relative;
+  width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: 14px 18px 96px;
+  padding: 14px 18px 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
+
+/* 顶栏区域固定不滚动 */
+.topbar, .filterbar, .search-row, .reminder-banner, .tag-chips { flex-shrink: 0; }
 
 /* 第一行：标题 + 日期导航 + 设置 */
 .topbar {
@@ -430,7 +445,17 @@ html[data-style="soft"] .tag-chip.active {
 }
 
 /* ================= 任务列表 ================= */
-.task-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.task-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 96px; /* 给右下角悬浮按钮留出空间 */
+}
 
 .task-item {
   position: relative;
@@ -623,7 +648,10 @@ html[data-style="soft"] .tag-pill {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
+  flex: 1;
+  min-height: 0;
   padding: 64px 0;
   color: var(--faint);
 }
@@ -718,6 +746,10 @@ html[data-style="soft"] .modal {
   color: var(--ink);
 }
 .field .required { color: var(--danger); }
+
+.code-row { display: flex; gap: 8px; }
+.code-row input { flex: 1; }
+.code-row .btn { white-space: nowrap; flex-shrink: 0; }
 .field .optional { color: var(--faint); font-weight: 400; font-size: 12px; }
 
 .field input,
@@ -861,6 +893,97 @@ html[data-style="soft"] .setting-block { background: color-mix(in srgb, var(--bg
 .cl-date { font-size: 11.5px; color: var(--faint); }
 .changelog-entry ul { padding-left: 18px; }
 .changelog-entry li { font-size: 12px; color: var(--muted); line-height: 1.7; }
+
+/* ================= 账户中心 ================= */
+.acct-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+html[data-style="soft"] .acct-tabs { border-radius: 999px; }
+
+.acct-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 6px 0;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+}
+html[data-style="soft"] .acct-tab { border-radius: 999px; }
+.acct-tab:hover { color: var(--ink); }
+html[data-style="things"] .acct-tab.active { background: var(--ink); color: var(--bg); }
+html[data-style="soft"] .acct-tab.active {
+  background: var(--grad);
+  color: var(--on-accent);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.acct-hint {
+  font-size: 12px;
+  color: var(--faint);
+  line-height: 1.5;
+  margin: 2px 0 6px;
+}
+
+.acct-profile { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+
+.acct-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--grad);
+  flex-shrink: 0;
+}
+html[data-accent-ink="1"] .acct-avatar { color: var(--on-accent); }
+
+.acct-nick { font-size: 16px; font-weight: 700; }
+.acct-mail { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+
+.acct-stats { display: flex; gap: 8px; margin-bottom: 6px; }
+.acct-stat {
+  flex: 1;
+  text-align: center;
+  padding: 10px 4px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.acct-stat b { display: block; font-size: 18px; color: var(--accent); }
+.acct-stat span { font-size: 11.5px; color: var(--muted); }
+
+.acct-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-soft);
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 已登录时顶栏账户按钮高亮 */
+.tb-icon.on { background: var(--accent-soft); color: var(--accent); }
+
+/* 日期选择器：禁选过去 */
+.cal-cell-off { opacity: 0.28; pointer-events: none; }
+.cal-nav-off { opacity: 0.25; pointer-events: none; }
+
+/* 确认框永远盖在其他弹窗之上（如账户中心里的退出登录确认） */
+#confirmModal { z-index: 130; }
 
 /* ================= Toast ================= */
 .toast {
@@ -1059,7 +1182,7 @@ html[data-style="soft"] .calendar-pop {
 
 /* ================= 小窗口适配（Electron 460×700 竖窗，最小宽 420） ================= */
 @media (max-width: 480px) {
-  .app { padding: 12px 14px 92px; }
+  .app { padding: 12px 14px 0; }
   .tb-title { font-size: 16px; }
   .dn-label { font-size: 13px; }
   .seg button { padding: 5px 9px; font-size: 12px; }

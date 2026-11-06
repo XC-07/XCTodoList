@@ -1006,6 +1006,12 @@ function renderDatePicker() {
   prevM.className = "cal-nav";
   prevM.setAttribute("aria-label", "上个月");
   prevM.textContent = "\u2039";
+  // 禁止翻到早于当前月（以系统本地日期为准）
+  const nowRef = new Date();
+  if (y === nowRef.getFullYear() && m === nowRef.getMonth()) {
+    prevM.disabled = true;
+    prevM.classList.add("cal-nav-off");
+  }
   prevM.addEventListener("click", () => {
     dpMonth = new Date(y, m - 1, 1);
     renderDatePicker();
@@ -1050,10 +1056,16 @@ function renderDatePicker() {
     cell.textContent = d;
     if (key === tKey) cell.classList.add("today");
     if (key === selKey) cell.classList.add("selected");
-    cell.addEventListener("click", () => {
-      if (dpTarget) dpTarget.value = key;
-      closeDatePicker();
-    });
+    // 禁止选择早于系统当天的日期
+    if (key < tKey) {
+      cell.disabled = true;
+      cell.classList.add("cal-cell-off");
+    } else {
+      cell.addEventListener("click", () => {
+        if (dpTarget) dpTarget.value = key;
+        closeDatePicker();
+      });
+    }
     grid.appendChild(cell);
   }
 
@@ -1231,6 +1243,191 @@ function closeSettingsModal() {
 
 $("#settingsBtn").addEventListener("click", openSettingsModal);
 $("#closeSettingsBtn").addEventListener("click", closeSettingsModal);
+
+/* ---------------- 账户中心（本地账户模式，云端接入后替换存储层即可） ---------------- */
+const ACCOUNTS_KEY = "todolist_accounts";
+const SESSION_KEY = "todolist_session";
+let acctTab = "login";
+
+function loadAccounts() {
+  try {
+    return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+function saveAccounts(a) {
+  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a));
+}
+// 账户以主键（新=昵称，旧=邮箱）存储；登录可用昵称或邮箱查找
+function findAccountKey(accounts, input) {
+  if (!input) return null;
+  if (accounts[input]) return input;
+  const lower = input.toLowerCase();
+  return (
+    Object.keys(accounts).find(
+      (k) => k.toLowerCase() === lower || (accounts[k].email || "").toLowerCase() === lower
+    ) || null
+  );
+}
+function currentUser() {
+  const key = localStorage.getItem(SESSION_KEY);
+  if (!key) return null;
+  const acc = loadAccounts()[key];
+  if (!acc) return null;
+  const email = acc.email || (key.includes("@") ? key : "");
+  return { key, name: acc.name || key, email, phone: acc.phone || "", createdAt: acc.createdAt, firstAt: acc.firstAt };
+}
+
+// 陪伴起点：首次登录时锁定——有任务记录按最早任务的创建时间，没有则按注册时间，此后永不变更
+function ensureFirstAt(user) {
+  if (user.firstAt) return user.firstAt;
+  let firstTaskAt = Infinity;
+  for (const t of tasks) if (t.createdAt && t.createdAt < firstTaskAt) firstTaskAt = t.createdAt;
+  const firstAt = Number.isFinite(firstTaskAt) ? firstTaskAt : user.createdAt;
+  const accounts = loadAccounts();
+  if (accounts[user.key]) {
+    accounts[user.key].firstAt = firstAt;
+    saveAccounts(accounts);
+  }
+  return firstAt;
+}
+
+// 密码散列：SHA-256(email:password)；非安全上下文（file://）退化为简易散列
+async function hashPass(email, pass) {
+  const data = new TextEncoder().encode(email + ":" + pass);
+  if (window.crypto && crypto.subtle) {
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  let h = 5381;
+  for (const b of data) h = ((h << 5) + h + b) >>> 0;
+  return "f" + h.toString(16);
+}
+
+function setAcctTab(tab) {
+  acctTab = tab;
+  document
+    .querySelectorAll(".acct-tab")
+    .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  const reg = tab === "register";
+  // 登录页：昵称/邮箱合一；注册页：昵称必填 + 邮箱/手机选填
+  $("#acctLoginIdField").classList.toggle("hidden", reg);
+  $("#acctNameField").classList.toggle("hidden", !reg);
+  $("#acctEmailRegField").classList.toggle("hidden", !reg);
+  $("#acctPass2Field").classList.toggle("hidden", !reg);
+  $("#acctPhoneField").classList.toggle("hidden", !reg);
+  $("#acctCodeField").classList.toggle("hidden", !reg);
+  $("#acctSubmitBtn").textContent = reg ? "注册并登录" : "登录";
+}
+
+function hideAcctErrors() {
+  ["acctEmailError", "acctNameError", "acctEmailRegError", "acctPassError", "acctPass2Error", "acctPhoneError"].forEach(
+    (id) => $("#" + id).classList.add("hidden")
+  );
+}
+function acctFail(errId, msg) {
+  const el = $("#" + errId);
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function renderAccountModal() {
+  const user = currentUser();
+  $("#accountGuest").classList.toggle("hidden", !!user);
+  $("#accountUser").classList.toggle("hidden", !user);
+  if (user) {
+    $("#acctAvatar").textContent = (user.name || user.key).trim().charAt(0).toUpperCase();
+    $("#acctNick").textContent = user.name;
+    $("#acctMail").textContent = user.email || "未绑定邮箱";
+    $("#acctStatTasks").textContent = tasks.length;
+    $("#acctStatDone").textContent = tasks.filter((t) => t.done).length;
+    // 陪伴天数按锁定的起点逐日累加，不受任务增删影响
+    $("#acctStatDays").textContent = Math.max(1, Math.ceil((Date.now() - ensureFirstAt(user)) / 86400000));
+  }
+  $("#accountBtn").classList.toggle("on", !!user);
+  $("#accountBtn").title = user ? `账户中心 · ${user.name}` : "账户中心";
+}
+
+function openAccountModal() {
+  hideAcctErrors();
+  setAcctTab("login"); // 每次打开回到登录标签
+  renderAccountModal();
+  $("#accountModal").classList.remove("hidden");
+}
+function closeAccountModal() {
+  $("#accountModal").classList.add("hidden");
+}
+
+$("#accountBtn").addEventListener("click", openAccountModal);
+document
+  .querySelectorAll("[data-close-account]")
+  .forEach((b) => b.addEventListener("click", closeAccountModal));
+$("#accountModal").addEventListener("click", (e) => {
+  if (e.target === $("#accountModal")) closeAccountModal();
+});
+document
+  .querySelectorAll(".acct-tab")
+  .forEach((b) => b.addEventListener("click", () => setAcctTab(b.dataset.tab)));
+
+$("#accountForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  hideAcctErrors();
+  const pass = $("#acctPass").value;
+  const accounts = loadAccounts();
+  if (acctTab === "register") {
+    const name = $("#acctName").value.trim();
+    const email = $("#acctEmailReg").value.trim().toLowerCase();
+    const phone = $("#acctPhone").value.trim();
+    if (!name) return acctFail("acctNameError", "请填写昵称");
+    if (pass.length < 6) return acctFail("acctPassError", "密码至少 6 位");
+    if ($("#acctPass2").value !== pass) return acctFail("acctPass2Error", "两次输入的密码不一致");
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return acctFail("acctEmailRegError", "邮箱格式不正确");
+    if (phone && !/^1\d{10}$/.test(phone)) return acctFail("acctPhoneError", "请输入 11 位手机号");
+    if (findAccountKey(accounts, name) || (email && findAccountKey(accounts, email)))
+      return acctFail("acctNameError", "该昵称或邮箱已注册，请直接登录");
+    accounts[name] = { name, email, phone, hash: await hashPass(name, pass), createdAt: Date.now() };
+    saveAccounts(accounts);
+    localStorage.setItem(SESSION_KEY, name);
+    toast(`注册成功，欢迎你，${name}`);
+  } else {
+    const input = $("#acctEmail").value.trim();
+    if (!input) return acctFail("acctEmailError", "请输入昵称或邮箱");
+    const key = findAccountKey(accounts, input);
+    if (!key || accounts[key].hash !== (await hashPass(key, pass)))
+      return acctFail("acctPassError", "账号或密码不正确");
+    localStorage.setItem(SESSION_KEY, key);
+    toast(`欢迎回来，${accounts[key].name || key}`);
+  }
+  $("#accountForm").reset();
+  closeAccountModal();
+  renderAccountModal();
+});
+
+// 手机号验证码：UI 占位，短信通道随云端上线
+$("#acctSendCodeBtn").addEventListener("click", () => {
+  const phone = $("#acctPhone").value.trim();
+  if (!phone) return acctFail("acctPhoneError", "请先填写手机号");
+  if (!/^1\d{10}$/.test(phone)) return acctFail("acctPhoneError", "请输入 11 位手机号");
+  $("#acctPhoneError").classList.add("hidden");
+  toast("短信验证码将随云端账户上线，敬请期待");
+});
+
+$("#logoutBtn").addEventListener("click", () => {
+  openConfirm(
+    "退出登录",
+    "退出后回到游客模式，本地任务数据不受影响。确定退出吗？",
+    () => {
+      localStorage.removeItem(SESSION_KEY);
+      renderAccountModal();
+      toast("已退出登录");
+    },
+    "退出"
+  );
+});
+
+renderAccountModal();
 
 $("#setSound").addEventListener("change", (e) => {
   settings.sound = e.target.checked;
@@ -1449,22 +1646,75 @@ $("#setDark").addEventListener("change", (e) => {
   renderAccentSwatches();
 });
 
-/* ---------------- 导入 / 导出 ---------------- */
-$("#exportBtn").addEventListener("click", () => {
-  const data = {
-    app: "todolist",
-    version: 2,
-    exportedAt: new Date().toISOString(),
-    tasks,
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
-    type: "application/json",
+/* ARCHIVE-CODEC-START ---------------- 存档编解码（v3：短键名 + 省略默认值 + gzip） ----------------
+ * 云端/备份存档格式：gzip( JSON.stringify({app,v:3,at,tasks:[packTask...]}) )
+ * 注：陪伴起点 firstAt 属于账户、不随存档走（导别人的包不改写自己的起点），云端阶段存账户记录
+ * 本地 localStorage 仍为原始全字段 JSON（loadTasks/saveTasks 不变，零迁移）
+ * 导入自动识别：gzip 魔数 → v3 存档；否则 → 旧版明文 JSON（长键名，同样兼容）
+ * ============================================================ */
+const ARCHIVE_KEYMAP = {
+  id: "i", title: "t", start: "s", due: "d", done: "o", note: "n",
+  priority: "p", tags: "g", repeat: "r", repeatDays: "w",
+  createdAt: "c", completedAt: "f", generatedFrom: "x", generatedNextId: "y",
+};
+const ARCHIVE_KEYMAP_R = Object.fromEntries(
+  Object.entries(ARCHIVE_KEYMAP).map(([k, v]) => [v, k])
+);
+
+// 打包单条任务：短键名 + 省略 null/默认值（createdAt 参与排序，始终保留）
+function packTask(t) {
+  const o = { i: t.id, t: t.title, s: t.start, o: t.done, c: t.createdAt };
+  if (t.due) o.d = t.due;
+  if (t.note) o.n = t.note;
+  if (t.priority !== "none") o.p = t.priority;
+  if (t.tags && t.tags.length) o.g = t.tags;
+  if (t.repeat !== "none") {
+    o.r = t.repeat;
+    if (t.repeatDays && t.repeatDays.length) o.w = t.repeatDays;
+  }
+  if (t.completedAt) o.f = t.completedAt;
+  if (t.generatedFrom) o.x = t.generatedFrom;
+  if (t.generatedNextId) o.y = t.generatedNextId;
+  return o;
+}
+
+// 解包单条任务：还原键名后交给 normalizeTask 补默认值（长键名旧格式也直接透传）
+function unpackTask(o) {
+  const t = {};
+  for (const k in o) t[ARCHIVE_KEYMAP_R[k] || k] = o[k];
+  return normalizeTask(t);
+}
+
+async function gzipText(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function gunzipBytes(buf) {
+  const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return await new Response(stream).text();
+}
+
+// 生成存档 Blob；不支持 CompressionStream 的旧浏览器退化为明文 v3 JSON
+async function buildArchiveBlob(taskList) {
+  const payload = JSON.stringify({
+    app: "todolist", v: 3, at: new Date().toISOString(), tasks: taskList.map(packTask),
   });
+  if (typeof CompressionStream !== "undefined") {
+    return { blob: new Blob([await gzipText(payload)], { type: "application/gzip" }), gz: true };
+  }
+  return { blob: new Blob([payload], { type: "application/json" }), gz: false };
+}
+/* ARCHIVE-CODEC-END */
+
+/* ---------------- 导入 / 导出 ---------------- */
+$("#exportBtn").addEventListener("click", async () => {
+  const { blob, gz } = await buildArchiveBlob(tasks);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const d = new Date();
   a.href = url;
-  a.download = `todo-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`;
+  a.download = `todo-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.${gz ? "json.gz" : "json"}`;
   a.click();
   URL.revokeObjectURL(url);
   toast(`已导出 ${tasks.length} 条任务备份`);
@@ -1476,13 +1726,21 @@ $("#importFile").addEventListener("change", (e) => {
   const file = e.target.files[0];
   e.target.value = ""; // 允许重复选择同一文件
   if (!file) return;
+  closeSettingsModal(); // 先关设置弹窗，避免遮挡导入确认框
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
-      const data = JSON.parse(reader.result);
+      const buf = new Uint8Array(reader.result);
+      let data;
+      if (buf[0] === 0x1f && buf[1] === 0x8b) {
+        if (typeof DecompressionStream === "undefined") throw new Error("need gzip support");
+        data = JSON.parse(await gunzipBytes(buf));
+      } else {
+        data = JSON.parse(new TextDecoder("utf-8").decode(buf));
+      }
       const incomingTasks = Array.isArray(data) ? data : data.tasks;
       if (!Array.isArray(incomingTasks)) throw new Error("invalid");
-      const imported = incomingTasks.map(normalizeTask);
+      const imported = incomingTasks.map(unpackTask);
       openConfirm(
         "导入备份",
         `备份文件包含 ${imported.length} 条任务，导入后将替换当前的全部数据。是否继续？`,
@@ -1498,7 +1756,27 @@ $("#importFile").addEventListener("change", (e) => {
       toast("导入失败：不是有效的备份文件");
     }
   };
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
+});
+
+/* ---------------- 清空所有数据 ---------------- */
+$("#clearAllBtn").addEventListener("click", () => {
+  if (!tasks.length) {
+    toast("当前没有任何数据");
+    return;
+  }
+  closeSettingsModal(); // 避免遮挡确认框
+  openConfirm(
+    "清空所有数据",
+    `将删除全部 ${tasks.length} 条任务并清空本地存档，此操作不可撤销。是否继续？`,
+    () => {
+      tasks = [];
+      saveTasks();
+      render();
+      toast("已清空所有数据");
+    },
+    "清空"
+  );
 });
 
 /* ---------------- 打开时到期提醒 ---------------- */
