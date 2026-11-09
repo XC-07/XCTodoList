@@ -456,6 +456,10 @@ html[data-style="soft"] .tag-chip.active {
   overscroll-behavior: contain;
   padding-bottom: 96px; /* 给右下角悬浮按钮留出空间 */
 }
+/* 列表为空时不占弹性空间，让空状态在剩余区域垂直居中 */
+.task-list:empty {
+  display: none;
+}
 
 .task-item {
   position: relative;
@@ -811,6 +815,10 @@ html[data-style="soft"] .field textarea { background: color-mix(in srgb, var(--b
 .setting-row .btn { white-space: nowrap; flex-shrink: 0; }
 html[data-style="soft"] .setting-row { background: color-mix(in srgb, var(--bg) 40%, transparent); }
 
+/* 云端同步行：可点击立即同步 */
+.cloud-sync-row { cursor: pointer; }
+.cloud-sync-row:active { transform: scale(0.995); }
+
 .setting-row input[type="checkbox"] {
   width: 16px;
   height: 16px;
@@ -895,35 +903,9 @@ html[data-style="soft"] .setting-block { background: color-mix(in srgb, var(--bg
 .changelog-entry li { font-size: 12px; color: var(--muted); line-height: 1.7; }
 
 /* ================= 账户中心 ================= */
-.acct-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  margin-bottom: 14px;
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-}
-html[data-style="soft"] .acct-tabs { border-radius: 999px; }
-
-.acct-tab {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 13.5px;
-  font-weight: 600;
-  padding: 6px 0;
-  border-radius: 8px;
-  transition: background 0.15s, color 0.15s;
-}
-html[data-style="soft"] .acct-tab { border-radius: 999px; }
-.acct-tab:hover { color: var(--ink); }
-html[data-style="things"] .acct-tab.active { background: var(--ink); color: var(--bg); }
-html[data-style="soft"] .acct-tab.active {
-  background: var(--grad);
-  color: var(--on-accent);
-  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+.hw-anon-btn {
+  display: block;
+  width: 100%;
 }
 
 .acct-hint {
@@ -932,6 +914,39 @@ html[data-style="soft"] .acct-tab.active {
   line-height: 1.5;
   margin: 2px 0 6px;
 }
+
+/* ---------- 华为账号登录 ---------- */
+.hw-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 10px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.hw-divider::before,
+.hw-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+.hw-login-btn {
+  display: block;
+  width: 100%;
+  padding: 9px 0;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #e61414, #c7000b);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  transition: filter 0.15s, opacity 0.15s;
+}
+.hw-login-btn:hover { filter: brightness(1.08); }
+.hw-login-btn.busy { opacity: 0.6; pointer-events: none; }
 
 .acct-profile { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 
@@ -948,21 +963,30 @@ html[data-style="soft"] .acct-tab.active {
   flex-shrink: 0;
 }
 html[data-accent-ink="1"] .acct-avatar { color: var(--on-accent); }
+/* 云端华为头像：图片铺满圆框 */
+.acct-avatar.has-img {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  color: transparent;
+}
 
 .acct-nick { font-size: 16px; font-weight: 700; }
 .acct-mail { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
-.acct-stats { display: flex; gap: 8px; margin-bottom: 6px; }
-.acct-stat {
-  flex: 1;
-  text-align: center;
-  padding: 10px 4px;
+/* 单卡三列 + 竖分隔线（对齐鸿蒙 AccountPage 统计卡） */
+.acct-stats {
+  display: flex;
+  margin-bottom: 6px;
+  padding: 14px 0;
   background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  border-radius: 14px;
 }
-.acct-stat b { display: block; font-size: 18px; color: var(--accent); }
-.acct-stat span { font-size: 11.5px; color: var(--muted); }
+.acct-stat { flex: 1; text-align: center; }
+.acct-stat + .acct-stat { border-left: 1px solid var(--rule); }
+.acct-stat b { display: block; font-size: 22px; font-weight: 700; color: var(--accent); }
+.acct-stat span { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
 
 .acct-badge {
   font-size: 11.5px;
@@ -974,6 +998,7 @@ html[data-accent-ink="1"] .acct-avatar { color: var(--on-accent); }
   white-space: nowrap;
   flex-shrink: 0;
 }
+.acct-badge.on { color: var(--accent); background: var(--accent-soft); }
 
 /* 已登录时顶栏账户按钮高亮 */
 .tb-icon.on { background: var(--accent-soft); color: var(--accent); }
@@ -1004,6 +1029,19 @@ html[data-accent-ink="1"] .acct-avatar { color: var(--on-accent); }
   max-width: calc(100vw - 60px);
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* toast 内联操作按钮（如「撤销」） */
+.toast-act {
+  margin-left: 10px;
+  background: none;
+  border: none;
+  color: currentColor;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: inherit;
+  padding: 0;
+}
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp {

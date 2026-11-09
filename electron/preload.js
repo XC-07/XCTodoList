@@ -28,4 +28,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onTrayNewTask(cb) {
     ipcRenderer.on("tray-new-task", () => cb());
   },
+
+  // 应用数据快照持久化（替代 localStorage，落盘 userData/todolist-data.json）
+  storeRead() {
+    return ipcRenderer.sendSync("store-read");
+  },
+  storeWrite(json) {
+    ipcRenderer.send("store-write", json);
+  },
+  storeFlush(json) {
+    return ipcRenderer.sendSync("store-write-sync", json);
+  },
+
+  // 华为账号 OAuth 登录（主进程内嵌授权窗 + PKCE 换 token）
+  hwLogin() {
+    return ipcRenderer.invoke("hw-login");
+  },
 });

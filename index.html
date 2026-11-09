@@ -265,7 +265,19 @@
       <div class="setting-changelog">
         <div class="changelog-title">更新日志</div>
         <div class="changelog-entry">
-          <div class="changelog-head"><span class="cl-ver">v1.1.1</span><span class="cl-date">2026-11-06</span></div>
+          <div class="changelog-head"><span class="cl-ver">v2.0.0</span><span class="cl-date">2026-11-10</span></div>
+          <ul>
+            <li>新增：华为账号登录，与鸿蒙版共用同一云端身份</li>
+            <li>新增：全自动云同步——任务、排序、外观实时跨端（Realtime + 轮询兜底 + 点击手动拉取），存档 gzip 压缩传输</li>
+            <li>新增：逐任务智能合并（最新修改优先 + 删除记录），两端各改各的互不覆盖</li>
+            <li>新增：拖拽排序同步到所有设备</li>
+            <li>新增：账户中心显示头像、昵称与同步状态；陪伴天数起点存云端，多端一致</li>
+            <li>改进：本地数据改为文件存储；合并前自动保留 5 版本地快照</li>
+            <li>改进：退出登录仅清除本地，云端数据不受影响；提醒横幅实时刷新</li>
+          </ul>
+        </div>
+        <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v1.1.3</span><span class="cl-date">2026-11-06</span></div>
           <ul>
             <li>新增：账户中心（注册/登录/注销，本地账户模式，昵称即主账号，邮箱/手机号选填）</li>
             <li>新增：陪伴天数——首次登录锁定起点，此后逐日累加不受任务增删影响</li>
@@ -276,13 +288,13 @@
           </ul>
         </div>
         <div class="changelog-entry">
-          <div class="changelog-head"><span class="cl-ver">v1.1.0.2</span><span class="cl-date">2026-11-03</span></div>
+          <div class="changelog-head"><span class="cl-ver">v1.1.2</span><span class="cl-date">2026-11-03</span></div>
           <ul>
             <li>改进：新建任务悬浮按钮固定在窗口右下角，不再跟随任务列表位置</li>
           </ul>
         </div>
         <div class="changelog-entry">
-          <div class="changelog-head"><span class="cl-ver">v1.1.0.1</span><span class="cl-date">2026-11-03</span></div>
+          <div class="changelog-head"><span class="cl-ver">v1.1.1</span><span class="cl-date">2026-11-03</span></div>
           <ul>
             <li>修复：桌面版窗口过窄时排版挤压错位，与网页预览不一致</li>
             <li>调整：默认窗口加宽至 460×700，最小宽度 420</li>
@@ -328,56 +340,12 @@
     <div class="modal modal-sm">
       <h2 class="modal-title">账户中心</h2>
 
-      <!-- 未登录：登录 / 注册 -->
+      <!-- 未登录：华为账号登录 / 匿名体验 -->
       <div id="accountGuest">
-        <div class="acct-tabs">
-          <button type="button" class="acct-tab active" data-tab="login">登录</button>
-          <button type="button" class="acct-tab" data-tab="register">注册</button>
-        </div>
-        <form id="accountForm" novalidate>
-          <div class="field" id="acctLoginIdField">
-            <label for="acctEmail" id="acctEmailLabel">邮箱 / 昵称 <span class="required">*</span></label>
-            <input type="text" id="acctEmail" placeholder="你注册时的昵称或邮箱" autocomplete="username">
-            <p class="field-error hidden" id="acctEmailError"></p>
-          </div>
-          <div class="field hidden" id="acctNameField">
-            <label for="acctName">昵称 <span class="required">*</span></label>
-            <input type="text" id="acctName" placeholder="怎么称呼你，登录后用它" maxlength="20" autocomplete="nickname">
-            <p class="field-error hidden" id="acctNameError"></p>
-          </div>
-          <div class="field">
-            <label for="acctPass">密码 <span class="required">*</span></label>
-            <input type="password" id="acctPass" placeholder="至少 6 位" autocomplete="current-password">
-            <p class="field-error hidden" id="acctPassError"></p>
-          </div>
-          <div class="field hidden" id="acctPass2Field">
-            <label for="acctPass2">确认密码 <span class="required">*</span></label>
-            <input type="password" id="acctPass2" placeholder="再输入一次" autocomplete="new-password">
-            <p class="field-error hidden" id="acctPass2Error"></p>
-          </div>
-          <div class="field hidden" id="acctPhoneField">
-            <label for="acctPhone">手机号 <span class="optional">（选填）</span></label>
-            <input type="tel" id="acctPhone" placeholder="11 位手机号" maxlength="11" inputmode="numeric" autocomplete="tel">
-            <p class="field-error hidden" id="acctPhoneError"></p>
-          </div>
-          <div class="field hidden" id="acctCodeField">
-            <label for="acctCode">短信验证码 <span class="optional">（选填）</span></label>
-            <div class="code-row">
-              <input type="text" id="acctCode" placeholder="6 位验证码" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-              <button type="button" class="btn ghost" id="acctSendCodeBtn">获取验证码</button>
-            </div>
-          </div>
-          <div class="field hidden" id="acctEmailRegField">
-            <label for="acctEmailReg">邮箱 <span class="optional">（选填）</span></label>
-            <input type="email" id="acctEmailReg" placeholder="you@example.com" autocomplete="email">
-            <p class="field-error hidden" id="acctEmailRegError"></p>
-          </div>
-          <p class="acct-hint">当前为本地账户模式：信息仅保存在本设备，云端同步与在线账户即将上线</p>
-          <div class="modal-actions">
-            <button type="button" class="btn ghost" data-close-account>取消</button>
-            <button type="submit" class="btn primary" id="acctSubmitBtn">登录</button>
-          </div>
-        </form>
+        <button type="button" class="hw-login-btn" id="hwLoginBtn">华为账号登录</button>
+        <div class="hw-divider"><span>或</span></div>
+        <button type="button" class="btn ghost hw-anon-btn" id="anonEnterBtn">匿名体验</button>
+        <p class="acct-hint">匿名体验：数据仅保存在本设备。登录华为账号后即可使用多端云同步。</p>
       </div>
 
       <!-- 已登录 -->
@@ -396,12 +364,12 @@
         </div>
         <div class="setting-section">云服务</div>
         <div class="setting-group">
-          <div class="setting-row">
+          <div class="setting-row cloud-sync-row" id="cloudSyncRow" title="点击立即与云端同步一次">
             <span class="setting-text">
               <span class="setting-name">云端同步</span>
-              <span class="setting-desc">压缩存档已就绪，等待云端上线</span>
+              <span class="setting-desc" id="cloudSyncDesc">登录华为账号后自动开启云同步</span>
             </span>
-            <span class="acct-badge">待开启</span>
+            <span class="acct-badge" id="cloudSyncBadge">待开启</span>
           </div>
         </div>
         <div class="modal-actions">

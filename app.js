@@ -8,6 +8,32 @@
  * 按天日程：任务可设开始日期，每天一栏，左右切换 + 小日历选择
  * ============================================================ */
 
+/* ---------------- 存储层 ----------------
+ * Electron：整份快照经 IPC 落盘 userData/todolist-data.json（防抖 250ms，关窗前同步刷盘）；
+ * 浏览器开发模式：自动回退 localStorage。接口与 localStorage 一致。 */
+const LS = (() => {
+  const api = typeof window !== "undefined" ? window.electronAPI : null;
+  if (api && api.storeRead) {
+    const snap = api.storeRead() || {};
+    let timer = null;
+    const dump = () => JSON.stringify(snap);
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => api.storeWrite(dump()), 250);
+    };
+    window.addEventListener("beforeunload", () => {
+      clearTimeout(timer);
+      api.storeFlush(dump());
+    });
+    return {
+      getItem: (k) => (Object.prototype.hasOwnProperty.call(snap, k) ? snap[k] : null),
+      setItem: (k, v) => { snap[k] = String(v); schedule(); },
+      removeItem: (k) => { delete snap[k]; schedule(); },
+    };
+  }
+  return localStorage;
+})();
+
 /* ---------------- 数据层 ---------------- */
 const STORAGE_KEY = "todo.tasks.v1";
 const SETTINGS_KEY = "todo.settings.v1";
@@ -33,31 +59,71 @@ let calMonth = new Date();     // 小日历显示的月份
 
 function loadTasks() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = LS.getItem(STORAGE_KEY);
     const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr)
+    const list = Array.isArray(arr)
       ? arr.filter((t) => t && typeof t === "object").map(normalizeTask)
       : [];
+    list.forEach((t, i) => { if (typeof t.ord !== "number") t.ord = i; }); // 旧数据补序号
+    return list;
   } catch {
     return [];
   }
 }
 
 function saveTasks() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  if (!applyingRemote) {
+    // 逐条比对签名：内容变了的盖 updatedAt；消失的记删除墓碑（v4 合并依据）
+    const now = Date.now();
+    const next = new Map();
+    for (const t of tasks) {
+      const sig = JSON.stringify(packTask(t));
+      next.set(t.id, sig);
+      if (lastSig.size && lastSig.get(t.id) !== sig) t.updatedAt = now;
+    }
+    if (lastSig.size) for (const id of lastSig.keys()) if (!next.has(id)) deletions[id] = now;
+    lastSig = next;
+    saveDeletions();
+  } else {
+    lastSig = new Map(tasks.map((t) => [t.id, JSON.stringify(packTask(t))]));
+  }
+  LS.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  if (onTasksSaved) onTasksSaved();
 }
 
 function loadSettings() {
   try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    return JSON.parse(LS.getItem(SETTINGS_KEY)) || {};
   } catch {
     return {};
   }
 }
 
 function saveSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (!applyingRemote) settings.modified = Date.now();
+  LS.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (onTasksSaved) onTasksSaved();
 }
+
+/* ---------------- v4 同步数据层：删除墓碑 + 历史快照 ---------------- */
+const DELETIONS_KEY = "todolist.deletions.v1";
+const HISTORY_KEY = "todolist.history.v1";
+const TOMBSTONE_TTL = 90 * 86400000; // 墓碑保留 90 天
+let deletions = (() => {
+  let d = {};
+  try { d = JSON.parse(LS.getItem(DELETIONS_KEY)) || {}; } catch {}
+  const cut = Date.now() - TOMBSTONE_TTL;
+  for (const id in d) if (!(typeof d[id] === "number" && d[id] >= cut)) delete d[id];
+  return d;
+})();
+function saveDeletions() {
+  LS.setItem(DELETIONS_KEY, JSON.stringify(deletions));
+}
+
+let lastSig = new Map(tasks.map((t) => [t.id, JSON.stringify(packTask(t))]));
+let applyingRemote = false;
+let onTasksSaved = null; // 云同步模块注入：数据变更后调度自动推送
+var getSyncStatus = null; // 云同步模块注入：查询同步状态
 
 function normalizeTask(t) {
   return {
@@ -75,7 +141,11 @@ function normalizeTask(t) {
     repeatDays: Array.isArray(t.repeatDays)
       ? [...new Set(t.repeatDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
       : [],
+    // 排序序号（手动模式位置，跨端同步；旧数据加载时补）
+    ord: typeof t.ord === "number" ? t.ord : null,
     createdAt: t.createdAt || Date.now(),
+    // updatedAt: 最后修改时刻（v4 云同步合并依据），旧数据回退创建时间
+    updatedAt: typeof t.updatedAt === "number" ? t.updatedAt : (typeof t.createdAt === "number" ? t.createdAt : Date.now()),
     // completedAt: 完成时刻（毫秒），用于让已完成任务保留在完成当天的栏目
     completedAt: typeof t.completedAt === "number" ? t.completedAt : null,
     // 重复任务链的内部记录：generatedFrom=由哪个任务生成；generatedNextId=完成时生成的下一期
@@ -190,12 +260,24 @@ function repeatLabel(t) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, action) {
   const el = $("#toast");
-  el.textContent = msg;
+  el.textContent = "";
+  el.append(document.createTextNode(msg));
+  if (action && action.fn) {
+    const b = document.createElement("button");
+    b.className = "toast-act";
+    b.type = "button";
+    b.textContent = action.label || "撤销";
+    b.addEventListener("click", () => {
+      el.classList.remove("show");
+      action.fn();
+    });
+    el.append(b);
+  }
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+  toastTimer = setTimeout(() => el.classList.remove("show"), action ? 8000 : 2600);
 }
 
 /* ---------------- 完成动效：音效 + 彩带 ---------------- */
@@ -330,6 +412,7 @@ function render() {
   renderCounts();
   renderTagChips();
   renderClearDoneBtn();
+  checkReminders(); // 任务增删改后即时刷新到期提醒横幅
 }
 
 function renderList() {
@@ -612,8 +695,16 @@ function commitDrop() {
   }
   if (!pos.before) to++;
   tasks.splice(to, 0, moved);
+  tasks.forEach((x, i) => { x.ord = i; }); // 重排后统一编号，签名 diff 只给位置变化的任务盖时间戳
   saveTasks();
   render();
+}
+
+// 新任务的排序序号：排最后
+function nextOrd() {
+  let m = -1;
+  for (const t of tasks) if (typeof t.ord === "number" && t.ord > m) m = t.ord;
+  return m + 1;
 }
 
 /* ---------------- 完成切换 & 重复任务 ---------------- */
@@ -649,6 +740,7 @@ function toggleDone(t, done, cb) {
         done: false,
         completedAt: null,
         createdAt: Date.now(),
+        ord: nextOrd(),
         generatedFrom: t.id,
         generatedNextId: null,
       });
@@ -820,6 +912,7 @@ $("#taskForm").addEventListener("submit", (e) => {
         repeatDays,
         tags,
         createdAt: Date.now(),
+        ord: nextOrd(),
       })
     );
   }
@@ -1244,92 +1337,35 @@ function closeSettingsModal() {
 $("#settingsBtn").addEventListener("click", openSettingsModal);
 $("#closeSettingsBtn").addEventListener("click", closeSettingsModal);
 
-/* ---------------- 账户中心（本地账户模式，云端接入后替换存储层即可） ---------------- */
+/* ---------------- 账户中心（华为登录 / 匿名体验；云端接入后替换存储层即可） ---------------- */
 const ACCOUNTS_KEY = "todolist_accounts";
 const SESSION_KEY = "todolist_session";
-let acctTab = "login";
+const ANON_KEY = "anonymous";
 
 function loadAccounts() {
   try {
-    return JSON.parse(localStorage.getItem(ACCOUNTS_KEY)) || {};
+    return JSON.parse(LS.getItem(ACCOUNTS_KEY)) || {};
   } catch {
     return {};
   }
 }
 function saveAccounts(a) {
-  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(a));
-}
-// 账户以主键（新=昵称，旧=邮箱）存储；登录可用昵称或邮箱查找
-function findAccountKey(accounts, input) {
-  if (!input) return null;
-  if (accounts[input]) return input;
-  const lower = input.toLowerCase();
-  return (
-    Object.keys(accounts).find(
-      (k) => k.toLowerCase() === lower || (accounts[k].email || "").toLowerCase() === lower
-    ) || null
-  );
+  LS.setItem(ACCOUNTS_KEY, JSON.stringify(a));
 }
 function currentUser() {
-  const key = localStorage.getItem(SESSION_KEY);
+  const key = LS.getItem(SESSION_KEY);
   if (!key) return null;
   const acc = loadAccounts()[key];
   if (!acc) return null;
-  const email = acc.email || (key.includes("@") ? key : "");
-  return { key, name: acc.name || key, email, phone: acc.phone || "", createdAt: acc.createdAt, firstAt: acc.firstAt };
-}
-
-// 陪伴起点：首次登录时锁定——有任务记录按最早任务的创建时间，没有则按注册时间，此后永不变更
-function ensureFirstAt(user) {
-  if (user.firstAt) return user.firstAt;
-  let firstTaskAt = Infinity;
-  for (const t of tasks) if (t.createdAt && t.createdAt < firstTaskAt) firstTaskAt = t.createdAt;
-  const firstAt = Number.isFinite(firstTaskAt) ? firstTaskAt : user.createdAt;
-  const accounts = loadAccounts();
-  if (accounts[user.key]) {
-    accounts[user.key].firstAt = firstAt;
-    saveAccounts(accounts);
-  }
-  return firstAt;
-}
-
-// 密码散列：SHA-256(email:password)；非安全上下文（file://）退化为简易散列
-async function hashPass(email, pass) {
-  const data = new TextEncoder().encode(email + ":" + pass);
-  if (window.crypto && crypto.subtle) {
-    const buf = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  let h = 5381;
-  for (const b of data) h = ((h << 5) + h + b) >>> 0;
-  return "f" + h.toString(16);
-}
-
-function setAcctTab(tab) {
-  acctTab = tab;
-  document
-    .querySelectorAll(".acct-tab")
-    .forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  const reg = tab === "register";
-  // 登录页：昵称/邮箱合一；注册页：昵称必填 + 邮箱/手机选填
-  $("#acctLoginIdField").classList.toggle("hidden", reg);
-  $("#acctNameField").classList.toggle("hidden", !reg);
-  $("#acctEmailRegField").classList.toggle("hidden", !reg);
-  $("#acctPass2Field").classList.toggle("hidden", !reg);
-  $("#acctPhoneField").classList.toggle("hidden", !reg);
-  $("#acctCodeField").classList.toggle("hidden", !reg);
-  $("#acctSubmitBtn").textContent = reg ? "注册并登录" : "登录";
-}
-
-function hideAcctErrors() {
-  ["acctEmailError", "acctNameError", "acctEmailRegError", "acctPassError", "acctPass2Error", "acctPhoneError"].forEach(
-    (id) => $("#" + id).classList.add("hidden")
-  );
-}
-function acctFail(errId, msg) {
-  const el = $("#" + errId);
-  el.textContent = msg;
-  el.classList.remove("hidden");
+  return {
+    key,
+    name: acc.name || key,
+    provider: acc.provider || "",
+    createdAt: acc.createdAt,
+    // 陪伴起点唯一来源：云端 profiles.first_at（登录/启动时随会话缓存，本地不独立存储）
+    cloudFirstAt: (acc.sb && acc.sb.cloudFirstAt) || 0,
+    avatar: (acc.sb && acc.sb.avatar) || "",
+  };
 }
 
 function renderAccountModal() {
@@ -1337,21 +1373,55 @@ function renderAccountModal() {
   $("#accountGuest").classList.toggle("hidden", !!user);
   $("#accountUser").classList.toggle("hidden", !user);
   if (user) {
-    $("#acctAvatar").textContent = (user.name || user.key).trim().charAt(0).toUpperCase();
-    $("#acctNick").textContent = user.name;
-    $("#acctMail").textContent = user.email || "未绑定邮箱";
+    // 头像：云端有华为头像则显示图片，否则回退名字首字母
+    const avEl = $("#acctAvatar");
+    if (user.avatar) {
+      avEl.textContent = "";
+      avEl.style.backgroundImage = `url("${user.avatar}")`;
+      avEl.classList.add("has-img");
+    } else {
+      avEl.classList.remove("has-img");
+      avEl.style.backgroundImage = "";
+      avEl.textContent = (user.name || user.key).trim().charAt(0).toUpperCase();
+    }
+    // 旧版本创建的匿名账户名沿用显示为「匿名用户」
+    $("#acctNick").textContent = user.name === "匿名旅人" ? "匿名用户" : user.name;
+    // 与鸿蒙版一致：华为账户副标题展示 UID 前 12 位（key 格式 hwid:openID）
+    $("#acctMail").textContent =
+      user.provider === "hwid"
+        ? "华为账号 · UID: " + user.key.slice(5, 17)
+        : user.provider === "anon" ? "匿名体验" : "本地账户";
     $("#acctStatTasks").textContent = tasks.length;
     $("#acctStatDone").textContent = tasks.filter((t) => t.done).length;
-    // 陪伴天数按锁定的起点逐日累加，不受任务增删影响
-    $("#acctStatDays").textContent = Math.max(1, Math.ceil((Date.now() - ensureFirstAt(user)) / 86400000));
+    // 陪伴天数只认云端起点；无云端起点（匿名/未连云）隐藏该栏（同鸿蒙版）
+    $("#acctStatDays").closest(".acct-stat").classList.toggle("hidden", !user.cloudFirstAt);
+    if (user.cloudFirstAt) {
+      $("#acctStatDays").textContent = Math.max(1, Math.ceil((Date.now() - user.cloudFirstAt) / 86400000));
+    }
+    // 云服务状态：仅华为账号且已建立 Supabase 会话时自动同步生效
+    const acc = loadAccounts()[user.key] || {};
+    const hasCloud = user.provider === "hwid" && acc.sb && acc.sb.userId;
+    const st = getSyncStatus ? getSyncStatus() : { pending: false, busy: false, connected: false };
+    $("#cloudSyncBadge").classList.toggle("on", !!hasCloud);
+    $("#cloudSyncBadge").textContent = hasCloud ? "已连接" : "待开启";
+    $("#cloudSyncDesc").textContent = !hasCloud
+      ? user.provider === "hwid"
+        ? "云端会话未建立，重新登录华为账号可重试"
+        : "登录华为账号后自动开启云同步"
+      : st.busy
+        ? "同步中…"
+        : st.pending
+          ? "有改动待推送…"
+          : acc.lastSyncMs
+            ? "自动同步 · 上次 " + new Date(acc.lastSyncMs).toLocaleString()
+            : "自动同步已开启，等待首次同步";
   }
-  $("#accountBtn").classList.toggle("on", !!user);
+  // 图标保持常态（与设置一致，悬停才高亮）；登录状态通过悬浮提示体现
+  $("#accountBtn").classList.remove("on");
   $("#accountBtn").title = user ? `账户中心 · ${user.name}` : "账户中心";
 }
 
 function openAccountModal() {
-  hideAcctErrors();
-  setAcctTab("login"); // 每次打开回到登录标签
   renderAccountModal();
   $("#accountModal").classList.remove("hidden");
 }
@@ -1366,60 +1436,49 @@ document
 $("#accountModal").addEventListener("click", (e) => {
   if (e.target === $("#accountModal")) closeAccountModal();
 });
-document
-  .querySelectorAll(".acct-tab")
-  .forEach((b) => b.addEventListener("click", () => setAcctTab(b.dataset.tab)));
 
-$("#accountForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  hideAcctErrors();
-  const pass = $("#acctPass").value;
+// 匿名体验：进入游客身份（同样拥有陪伴起点，后续登录华为账号可升级接续）
+$("#anonEnterBtn").addEventListener("click", () => {
   const accounts = loadAccounts();
-  if (acctTab === "register") {
-    const name = $("#acctName").value.trim();
-    const email = $("#acctEmailReg").value.trim().toLowerCase();
-    const phone = $("#acctPhone").value.trim();
-    if (!name) return acctFail("acctNameError", "请填写昵称");
-    if (pass.length < 6) return acctFail("acctPassError", "密码至少 6 位");
-    if ($("#acctPass2").value !== pass) return acctFail("acctPass2Error", "两次输入的密码不一致");
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-      return acctFail("acctEmailRegError", "邮箱格式不正确");
-    if (phone && !/^1\d{10}$/.test(phone)) return acctFail("acctPhoneError", "请输入 11 位手机号");
-    if (findAccountKey(accounts, name) || (email && findAccountKey(accounts, email)))
-      return acctFail("acctNameError", "该昵称或邮箱已注册，请直接登录");
-    accounts[name] = { name, email, phone, hash: await hashPass(name, pass), createdAt: Date.now() };
+  if (!accounts[ANON_KEY]) {
+    accounts[ANON_KEY] = { name: "匿名用户", provider: "anon", createdAt: Date.now() };
     saveAccounts(accounts);
-    localStorage.setItem(SESSION_KEY, name);
-    toast(`注册成功，欢迎你，${name}`);
-  } else {
-    const input = $("#acctEmail").value.trim();
-    if (!input) return acctFail("acctEmailError", "请输入昵称或邮箱");
-    const key = findAccountKey(accounts, input);
-    if (!key || accounts[key].hash !== (await hashPass(key, pass)))
-      return acctFail("acctPassError", "账号或密码不正确");
-    localStorage.setItem(SESSION_KEY, key);
-    toast(`欢迎回来，${accounts[key].name || key}`);
   }
-  $("#accountForm").reset();
+  LS.setItem(SESSION_KEY, ANON_KEY);
   closeAccountModal();
   renderAccountModal();
-});
-
-// 手机号验证码：UI 占位，短信通道随云端上线
-$("#acctSendCodeBtn").addEventListener("click", () => {
-  const phone = $("#acctPhone").value.trim();
-  if (!phone) return acctFail("acctPhoneError", "请先填写手机号");
-  if (!/^1\d{10}$/.test(phone)) return acctFail("acctPhoneError", "请输入 11 位手机号");
-  $("#acctPhoneError").classList.add("hidden");
-  toast("短信验证码将随云端账户上线，敬请期待");
+  toast("已进入匿名模式，随时可在账户中心登录华为账号");
 });
 
 $("#logoutBtn").addEventListener("click", () => {
   openConfirm(
     "退出登录",
-    "退出后回到游客模式，本地任务数据不受影响。确定退出吗？",
+    "退出账号会清除本地存档，云端数据不受影响。确定退出？",
     () => {
-      localStorage.removeItem(SESSION_KEY);
+      // 先掐断一切自动同步：退出过程中绝不允许任何网络操作
+      stopRealtime();
+      clearTimeout(pushTimer);
+      clearTimeout(remoteTimer);
+      cloudPending = false;
+      cloudBusy = false;
+      const cur = currentUser();
+      const accounts = loadAccounts();
+      const acc = cur ? accounts[cur.key] : null;
+      const connected = cur && cur.provider === "hwid" && acc && acc.sb;
+      if (acc) {
+        delete acc.sb;
+        delete acc.lastSyncMs;
+        saveAccounts(accounts);
+      }
+      LS.removeItem(SESSION_KEY);
+      if (connected) {
+        // 数据跟着账户走：本地任务清空（不记墓碑、不触发推送），重新登录后自动同步回来
+        applyingRemote = true;
+        tasks = [];
+        saveTasks();
+        applyingRemote = false;
+        render(); // 任务已空，提醒横幅随 render 自动收起
+      }
       renderAccountModal();
       toast("已退出登录");
     },
@@ -1565,6 +1624,11 @@ function currentPalette() {
   return ACCENT_PALETTES[settings.style] || ACCENT_PALETTES.things;
 }
 
+// 云同步校验用：两套色板的全部合法强调色 id
+const VALID_ACCENTS = new Set(
+  [...ACCENT_PALETTES.things, ...ACCENT_PALETTES.soft].map((c) => c.id)
+);
+
 // 把所选主题色注入 CSS 变量（--accent / --accent2 / --grad），全局联动
 function applyStyle() {
   const root = document.documentElement;
@@ -1648,14 +1712,15 @@ $("#setDark").addEventListener("change", (e) => {
 
 /* ARCHIVE-CODEC-START ---------------- 存档编解码（v3：短键名 + 省略默认值 + gzip） ----------------
  * 云端/备份存档格式：gzip( JSON.stringify({app,v:3,at,tasks:[packTask...]}) )
- * 注：陪伴起点 firstAt 属于账户、不随存档走（导别人的包不改写自己的起点），云端阶段存账户记录
- * 本地 localStorage 仍为原始全字段 JSON（loadTasks/saveTasks 不变，零迁移）
+ * 注：陪伴起点只认云端 profiles.first_at（本地不存，导别人的包不影响自己的起点）
+ * 本地存储（LS 快照文件）仍为原始全字段 JSON（loadTasks/saveTasks 不变，零迁移）
  * 导入自动识别：gzip 魔数 → v3 存档；否则 → 旧版明文 JSON（长键名，同样兼容）
  * ============================================================ */
 const ARCHIVE_KEYMAP = {
   id: "i", title: "t", start: "s", due: "d", done: "o", note: "n",
   priority: "p", tags: "g", repeat: "r", repeatDays: "w",
   createdAt: "c", completedAt: "f", generatedFrom: "x", generatedNextId: "y",
+  updatedAt: "u", ord: "q",
 };
 const ARCHIVE_KEYMAP_R = Object.fromEntries(
   Object.entries(ARCHIVE_KEYMAP).map(([k, v]) => [v, k])
@@ -1663,7 +1728,8 @@ const ARCHIVE_KEYMAP_R = Object.fromEntries(
 
 // 打包单条任务：短键名 + 省略 null/默认值（createdAt 参与排序，始终保留）
 function packTask(t) {
-  const o = { i: t.id, t: t.title, s: t.start, o: t.done, c: t.createdAt };
+  const o = { i: t.id, t: t.title, s: t.start, o: t.done, c: t.createdAt, u: t.updatedAt || t.createdAt };
+  if (typeof t.ord === "number") o.q = t.ord;
   if (t.due) o.d = t.due;
   if (t.note) o.n = t.note;
   if (t.priority !== "none") o.p = t.priority;
@@ -1779,11 +1845,20 @@ $("#clearAllBtn").addEventListener("click", () => {
   );
 });
 
-/* ---------------- 打开时到期提醒 ---------------- */
+/* ---------------- 到期提醒横幅 ----------------
+ * 启动、云同步合并、每 30 秒巡检时重新评估：
+ * 有过期/今日到期 → 弹出；全部处理完 → 自动收起；
+ * 用户手动关闭后本轮不再弹，直到提醒清零重新计。 */
+let reminderDismissed = false;
 function checkReminders() {
   const dueToday = tasks.filter(isDueToday);
   const overdue = tasks.filter(isOverdue);
-  if (dueToday.length === 0 && overdue.length === 0) return;
+  if (dueToday.length === 0 && overdue.length === 0) {
+    $("#reminderBanner").classList.add("hidden");
+    reminderDismissed = false;
+    return;
+  }
+  if (reminderDismissed) return;
   const parts = [];
   if (overdue.length > 0) parts.push(`<strong>${overdue.length}</strong> 项任务已过期`);
   if (dueToday.length > 0) parts.push(`<strong>${dueToday.length}</strong> 项任务今日到期`);
@@ -1797,15 +1872,605 @@ $("#reminderView").addEventListener("click", () => {
   activeTags.clear();
   selectedDate = todayKey();
   setFilter(tasks.some(isOverdue) ? "overdue" : "all");
+  reminderDismissed = true;
   $("#reminderBanner").classList.add("hidden");
 });
 
-$("#reminderClose").addEventListener("click", () =>
-  $("#reminderBanner").classList.add("hidden")
-);
+$("#reminderClose").addEventListener("click", () => {
+  reminderDismissed = true;
+  $("#reminderBanner").classList.add("hidden");
+});
 
 /* ---------------- Electron 集成（Web 模式下 ELECTRON 为 null，全部跳过） ---------------- */
 const ELECTRON = typeof window !== "undefined" ? window.electronAPI || null : null;
+
+/* ---------------- 华为账号登录（Electron 走主进程 OAuth；Web 端提示用桌面版） ---------------- */
+{
+  const HW_LABEL = "华为账号登录";
+  $("#hwLoginBtn").addEventListener("click", async () => {
+    if (!ELECTRON || !ELECTRON.hwLogin) {
+      toast("华为账号登录需在桌面版中使用");
+      return;
+    }
+    const btn = $("#hwLoginBtn");
+    if (btn.classList.contains("busy")) return;
+    btn.classList.add("busy");
+    btn.textContent = "等待授权完成…";
+    let r;
+    try {
+      r = await ELECTRON.hwLogin();
+    } catch (e) {
+      r = { error: (e && e.message) || String(e) };
+    }
+    btn.classList.remove("busy");
+    btn.textContent = HW_LABEL;
+    if (!r) return;
+    if (r.error) {
+      if (r.error !== "canceled") toast("华为登录失败：" + r.error);
+      return;
+    }
+    const key = "hwid:" + r.openID;
+    const accounts = loadAccounts();
+    if (!accounts[key]) {
+      accounts[key] = { name: r.name || "华为用户", provider: "hwid", createdAt: Date.now() };
+    } else if (r.name && accounts[key].provider === "hwid") {
+      accounts[key].name = r.name; // 跟随华为昵称更新
+    }
+    delete accounts[key].firstAt; // 陪伴起点不再本地存储，唯一来源为云端 profiles.first_at
+    // 用华为凭证换 Supabase 会话（失败不阻断本地登录，重新登录可重试）
+    btn.textContent = "连接云端…";
+    // 上报本地最早任务创建时间：首次建号时云端 first_at 以它为准
+    let firstTaskAt = 0;
+    for (const t of tasks) if (t.createdAt && (!firstTaskAt || t.createdAt < firstTaskAt)) firstTaskAt = t.createdAt;
+    const ex = await sbExchange(r, firstTaskAt);
+    btn.textContent = HW_LABEL; // 无论成败都恢复按钮文案
+    if (ex.sb) accounts[key].sb = ex.sb;
+    saveAccounts(accounts);
+    LS.setItem(SESSION_KEY, key);
+    closeAccountModal();
+    renderAccountModal();
+    if (ex.sb) {
+      toast(`华为账号登录成功，欢迎你，${accounts[key].name}`);
+      startRealtime();
+      setTimeout(autoSync, 800); // 登录后自动拉取合并（本地为空则回填云端数据）
+    } else {
+      toast(`已登录 ${accounts[key].name}，但云端会话获取失败：${ex.err}`);
+    }
+  });
+}
+
+/* ---------------- 云端同步（Supabase Storage · 全自动合并） ----------------
+ * 与鸿蒙版共用同一 Supabase 项目与 auth 用户。
+ * 桌面端存档为 gzip：{sbUserId}/sync.json.gz（v4 信封：updatedAt + 删除墓碑）；
+ * 拉取时若 .gz 不存在则回退读鸿蒙明文 {sbUserId}/sync.json，保持跨端可互读。
+ * 会话来源：登录时经 Edge Function huawei-auth 换取，存账户记录 acc.sb，过期自动续期。
+ * ============================================================ */
+const SB_URL = "https://rqrijcjzhipcwdrgrgwf.supabase.co";
+const SB_ANON = "sb_publishable_7V8Ov31ZYw2LpP5PgbkswQ_PF3gw5C7";
+
+// 华为凭证 → Supabase 会话（Edge Function 双模式：idToken 验签 / access_token 服务端复核）
+// 成功返回 { sb }，失败返回 { err }（带原因，便于区分断网/服务端错误）
+async function sbExchange(r, firstTaskAt) {
+  try {
+    const res = await fetch(`${SB_URL}/functions/v1/huawei-auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SB_ANON },
+      // firstTaskAt：本地最早任务创建时间，首次建号时云端 first_at 以它为准
+      body: JSON.stringify({ idToken: r.idToken || "", huaweiAccessToken: r.accessToken || "", firstTaskAt: firstTaskAt || 0 }),
+    });
+    if (!res.ok) return { err: "云端返回 HTTP " + res.status };
+    const d = await res.json();
+    if (!d.access_token || !d.user_id) return { err: "云端未返回有效会话" };
+    return {
+      sb: {
+        access_token: d.access_token,
+        refresh_token: d.refresh_token || "",
+        expiresAt: Date.now() + (d.expires_in || 3600) * 1000,
+        userId: d.user_id,
+        // 云端陪伴起点（profiles.first_at），登录时用于回拨对齐
+        cloudFirstAt: Number(d.profile && d.profile.first_at) || 0,
+        // 华为头像（profiles.avatar_url，由 Edge Function 从凭证解析入库）
+        avatar: String((d.profile && d.profile.avatar_url) || ""),
+      },
+    };
+  } catch (e) {
+    return { err: "网络不通（" + ((e && e.message) || e) + "），请确认代理已开启" };
+  }
+}
+
+// 取有效 Supabase 会话；临近过期（<60s）先用 refresh_token 续期
+async function ensureSbSession(key) {
+  const accounts = loadAccounts();
+  const acc = accounts[key];
+  if (!acc || !acc.sb || !acc.sb.access_token) return null;
+  if (acc.sb.expiresAt - Date.now() > 60000) return acc.sb;
+  try {
+    const res = await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SB_ANON },
+      body: JSON.stringify({ refresh_token: acc.sb.refresh_token }),
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    acc.sb = {
+      access_token: d.access_token,
+      refresh_token: d.refresh_token || acc.sb.refresh_token,
+      expiresAt: Date.now() + (d.expires_in || 3600) * 1000,
+      userId: acc.sb.userId,
+      cloudFirstAt: acc.sb.cloudFirstAt || 0,
+      avatar: acc.sb.avatar || "",
+    };
+    saveAccounts(accounts);
+    return acc.sb;
+  } catch {
+    return null;
+  }
+}
+
+const sbStorageUrl = (sb, name) => `${SB_URL}/storage/v1/object/sync/${sb.userId}/${name}`;
+const sbAuthHeaders = (sb) => ({ apikey: SB_ANON, Authorization: `Bearer ${sb.access_token}` });
+
+// 已登录但本地会话缓存里没有云端起点（老版本升级/换设备）：启动时从 profiles 拉一次
+async function syncCloudFirstAt() {
+  const user = currentUser();
+  if (!user || user.provider !== "hwid") return;
+  const accounts = loadAccounts();
+  const acc = accounts[user.key];
+  if (!acc || !acc.sb) return;
+  if (acc.sb.cloudFirstAt && acc.sb.avatar) return; // 起点和头像都已缓存则不必拉
+  const sb = await ensureSbSession(user.key);
+  if (!sb) return;
+  try {
+    const res = await fetch(`${SB_URL}/rest/v1/profiles?select=first_at,avatar_url&uid=eq.${sb.userId}`, {
+      headers: sbAuthHeaders(sb),
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const p = rows && rows[0];
+    const fa = p ? Number(p.first_at) : 0;
+    const av = p ? String(p.avatar_url || "") : "";
+    if (fa || av) {
+      if (fa) acc.sb.cloudFirstAt = fa;
+      if (av) acc.sb.avatar = av;
+      saveAccounts(accounts);
+      renderAccountModal();
+    }
+  } catch {}
+}
+
+// v4 信封：任务（含 updatedAt）+ 删除墓碑 + 设置（含修改时刻）
+function buildCloudEnvelope() {
+  return {
+    app: "todolist",
+    v: 4,
+    at: new Date().toISOString(),
+    tasks: tasks.map(packTask),
+    deletions: Object.entries(deletions),
+    settings: {
+      theme: settings.theme,
+      sortMode: settings.sortMode,
+      sound: settings.sound,
+      notifications: settings.notifications,
+      style: settings.style,
+      accent: settings.accent,
+      modified: settings.modified || 0,
+    },
+  };
+}
+
+async function cloudPush() {
+  const user = currentUser();
+  if (!user) throw new Error("未登录");
+  const sb = await ensureSbSession(user.key);
+  if (!sb) throw new Error("云端会话已失效，请重新登录华为账号");
+  const payload = JSON.stringify(buildCloudEnvelope());
+  // 桌面端上传 gzip（CompressionStream 不可用时退化为明文）
+  let body = payload;
+  let ctype = "application/json";
+  if (typeof CompressionStream !== "undefined") {
+    body = await gzipText(payload);
+    ctype = "application/gzip";
+  }
+  const res = await fetch(sbStorageUrl(sb, "sync.json.gz"), {
+    method: "POST",
+    headers: { ...sbAuthHeaders(sb), "Content-Type": ctype, "x-upsert": "true" },
+    body,
+  });
+  if (!res.ok) throw new Error("上传失败（HTTP " + res.status + "）");
+  // 写触发行：其他设备的 Realtime 订阅据此拉取合并（失败不影响存档本身）
+  try {
+    await fetch(`${SB_URL}/rest/v1/sync_state?on_conflict=uid`, {
+      method: "POST",
+      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ uid: sb.userId, at: Date.now() }),
+    });
+  } catch {}
+  const accounts = loadAccounts();
+  if (accounts[user.key]) {
+    accounts[user.key].lastSyncMs = Date.now();
+    saveAccounts(accounts);
+  }
+}
+
+// 返回 null 表示云端尚无存档；抛错表示失败
+async function cloudPull() {
+  const user = currentUser();
+  if (!user) throw new Error("未登录");
+  const sb = await ensureSbSession(user.key);
+  if (!sb) throw new Error("云端会话已失效，请重新登录华为账号");
+  // 优先读桌面端 gzip 存档；不存在则回退读鸿蒙明文存档
+  let res = await fetch(sbStorageUrl(sb, "sync.json.gz"), { headers: sbAuthHeaders(sb) });
+  if (res.status === 400 || res.status === 404) {
+    res = await fetch(sbStorageUrl(sb, "sync.json"), { headers: sbAuthHeaders(sb) });
+  }
+  if (res.status === 400 || res.status === 404) return null;
+  if (!res.ok) throw new Error("下载失败（HTTP " + res.status + "）");
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let data;
+  if (buf[0] === 0x1f && buf[1] === 0x8b) {
+    if (typeof DecompressionStream === "undefined") throw new Error("需要 gzip 支持");
+    data = JSON.parse(await gunzipBytes(buf));
+  } else {
+    data = JSON.parse(new TextDecoder("utf-8").decode(buf));
+  }
+  if (!data || !Array.isArray(data.tasks)) throw new Error("云端存档格式不正确");
+  return data;
+}
+
+// 应用云端 settings：仅当云端更新（modified 更大）时覆盖本地
+function applyCloudSettings(s) {
+  if (!s || typeof s !== "object") return false;
+  const remoteModified = typeof s.modified === "number" ? s.modified : 0;
+  if (remoteModified && remoteModified <= (settings.modified || 0)) return false;
+  if (s.theme === "light" || s.theme === "dark") settings.theme = s.theme;
+  if (["due", "priority", "manual"].includes(s.sortMode)) settings.sortMode = s.sortMode;
+  if (typeof s.sound === "boolean") settings.sound = s.sound;
+  if (typeof s.notifications === "boolean") settings.notifications = s.notifications;
+  if (["things", "soft"].includes(s.style)) settings.style = s.style;
+  if (VALID_ACCENTS.has(s.accent)) settings.accent = s.accent;
+  settings.modified = remoteModified || Date.now();
+  saveSettings();
+  applyTheme();
+  renderStyleSeg();
+  renderAccentSwatches();
+  $("#sortSelect").value = settings.sortMode;
+  $("#setSound").checked = settings.sound;
+  $("#setNotify").checked = settings.notifications;
+  return true;
+}
+
+/* ---------------- 云同步（全自动 · v4 合并） ----------------
+ * 本地任何改动 2s 防抖后自动推送 gzip 存档 + sync_state 触发行；
+ * Realtime 监听触发行 → 自动拉取并按任务合并（updatedAt LWW + 删除墓碑）；
+ * 合并前存本地快照（最多 5 版），toast 可一键撤销。
+ * 守卫：本地无任务且无墓碑时绝不推送；退出登录不做任何网络操作。
+ * ============================================================ */
+let cloudBusy = false;
+let cloudPending = false;
+let pushTimer = null;
+let remoteTimer = null;
+let lastPushAt = 0;
+let pollSeenAt = 0; // 轮询已见的触发行时间戳（避免重复下载）
+
+function canSync() {
+  const user = currentUser();
+  if (!user || user.provider !== "hwid") return false;
+  const acc = loadAccounts()[user.key];
+  return !!(acc && acc.sb && acc.sb.userId);
+}
+
+function refreshSyncStatus() {
+  if (!$("#accountModal").classList.contains("hidden")) renderAccountModal();
+}
+
+/* ---- 历史快照：撤销依据，最多 5 版 ---- */
+function loadHistory() {
+  try {
+    const h = JSON.parse(LS.getItem(HISTORY_KEY));
+    return Array.isArray(h) ? h : [];
+  } catch {
+    return [];
+  }
+}
+function pushHistory() {
+  const hist = loadHistory();
+  hist.push({
+    at: Date.now(),
+    tasks: JSON.parse(JSON.stringify(tasks)),
+    deletions: JSON.parse(JSON.stringify(deletions)),
+    settings: JSON.parse(JSON.stringify(settings)),
+  });
+  while (hist.length > 5) hist.shift();
+  LS.setItem(HISTORY_KEY, JSON.stringify(hist));
+}
+
+/* ---- 逐任务合并：墓碑压制 + updatedAt LWW；本地保序，远端新任务追加末尾 ----
+ * v3 旧存档（鸿蒙未升级前）按 legacy 模式处理：只增不删、不覆盖本地。 */
+function mergeRemote(data) {
+  const legacy = !(data.v >= 4);
+  const remoteDel = legacy ? {} : Object.fromEntries(Array.isArray(data.deletions) ? data.deletions : []);
+  for (const id in remoteDel) {
+    const ts = remoteDel[id];
+    if (typeof ts === "number" && (!(id in deletions) || ts > deletions[id])) deletions[id] = ts;
+  }
+  const remoteMap = new Map();
+  for (const pack of data.tasks) {
+    const t = unpackTask(pack);
+    if (t && t.id) remoteMap.set(t.id, t);
+  }
+  const localMap = new Map();
+  for (const t of tasks) localMap.set(t.id, t);
+  const result = [];
+  const seen = new Set();
+  let changed = 0;
+  // 以远端数组顺序为准：拖拽重排不盖 updatedAt，顺序信息只存在于 gz 的数组位置里
+  for (const [id, rem] of remoteMap) {
+    seen.add(id);
+    const loc = localMap.get(id);
+    const ru = rem.updatedAt || 0;
+    const tomb = deletions[id] || 0;
+    if (loc) {
+      const lu = loc.updatedAt || 0;
+      if (tomb && tomb >= Math.max(lu, ru)) { changed++; continue; } // 被删除（任一端）
+      if (ru > lu) { result.push(rem); changed++; continue; }        // 远端更新
+      result.push(loc);
+    } else {
+      if (!legacy && tomb && tomb >= ru) { changed++; continue; }
+      result.push(rem);
+      changed++;
+    }
+  }
+  // 仅本地有的任务（另一端还没有）追加到末尾
+  for (const t of tasks) {
+    if (seen.has(t.id)) continue;
+    const tomb = deletions[t.id] || 0;
+    if (tomb && tomb >= (t.updatedAt || 0)) { changed++; continue; }
+    result.push(t);
+  }
+  // 纯重排不产生 updatedAt 差异：用顺序对比识别"只有顺序变了"的情况
+  if (!changed) {
+    if (result.length !== tasks.length) changed = 1;
+    else for (let i = 0; i < result.length; i++) if (result[i].id !== tasks[i].id) { changed = 1; break; }
+  }
+  // 最终顺序以 ord 序号裁决（逐任务 LWW 已选出最新的 ord；无 ord 的旧数据稳定排在末尾）
+  result.sort((a, b) => {
+    const A = typeof a.ord === "number" ? a.ord : Infinity;
+    const B = typeof b.ord === "number" ? b.ord : Infinity;
+    return A - B;
+  });
+  return { legacy, result, changed, count: result.length };
+}
+
+function popHistory() {
+  const hist = loadHistory();
+  hist.pop();
+  LS.setItem(HISTORY_KEY, JSON.stringify(hist));
+}
+
+function applyMerged(merged) {
+  applyingRemote = true;
+  tasks = merged.result;
+  saveTasks();
+  saveDeletions();
+  applyingRemote = false;
+  render();
+  checkReminders();
+}
+
+/* ---- 自动推送：2s 防抖，空数据 + 无墓碑时绝不推送 ---- */
+function scheduleCloudPush() {
+  if (!canSync() || applyingRemote) return;
+  cloudPending = true;
+  refreshSyncStatus();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(doAutoPush, 2000);
+}
+
+async function doAutoPush() {
+  clearTimeout(pushTimer);
+  if (!cloudPending) return;
+  if (tasks.length === 0 && Object.keys(deletions).length === 0) {
+    cloudPending = false;
+    return;
+  }
+  if (cloudBusy) return;
+  cloudPending = false;
+  cloudBusy = true;
+  refreshSyncStatus(); // 与手机版一致：推送开始即显示"同步中…"
+  try {
+    await cloudPush();
+    lastPushAt = Date.now();
+    pollSeenAt = Math.max(pollSeenAt, lastPushAt); // 自己写的触发行不必再拉
+  } catch {
+    cloudPending = true;
+    setTimeout(doAutoPush, 15000); // 失败 15s 后重试
+  } finally {
+    cloudBusy = false;
+    refreshSyncStatus();
+  }
+}
+
+/* ---- 自动拉取 + 合并（manual=手动点击触发，完成后统一提示"同步完成"） ---- */
+async function autoSync(manual) {
+  if (!canSync() || cloudBusy) return;
+  if (cloudPending) await doAutoPush();
+  if (!canSync()) return;
+  cloudBusy = true;
+  refreshSyncStatus();
+  let ok = false;
+  try {
+    const data = await cloudPull();
+    if (data) pollSeenAt = Math.max(pollSeenAt, (Number(data.at) || Date.now()) + 5000); // 本次已覆盖该存档，轮询不必重复拉
+    if (!data) {
+      // 云端还没有存档：本地有数据则做首次上传
+      if (tasks.length) {
+        await cloudPush();
+        lastPushAt = Date.now();
+      }
+      ok = true;
+      return;
+    }
+    applyingRemote = true;
+    applyCloudSettings(data.settings);
+    applyingRemote = false;
+    pushHistory(); // 合并会改动 deletions，快照必须先于合并保存
+    const merged = mergeRemote(data);
+    if (merged.changed > 0) {
+      applyMerged(merged);
+      if (!manual) toast(`已同步云端变更 · 共 ${merged.count} 条任务`);
+    } else {
+      popHistory();
+    }
+    ok = true;
+  } catch {
+    if (manual) toast("同步失败，请检查网络");
+  } finally {
+    cloudBusy = false;
+    refreshSyncStatus();
+    if (manual && ok) toast("同步完成");
+  }
+}
+
+function scheduleRemoteSync() {
+  if (Date.now() - lastPushAt < 5000) return; // 忽略自己推送引发的回声
+  clearTimeout(remoteTimer);
+  remoteTimer = setTimeout(autoSync, 1200);
+}
+
+/* ---- 10s 轮询兜底：只查 sync_state 触发行（几十字节），云端有更新才下载合并；
+ * Realtime 断线/丢事件时靠它保证最终一致，自身推送/已拉过的存档不会触发重复下载 ---- */
+setInterval(async () => {
+  if (!canSync() || cloudBusy || cloudPending) return;
+  if (Date.now() - lastPushAt < 6000) return;
+  try {
+    const user = currentUser();
+    const sb = await ensureSbSession(user.key);
+    if (!sb) return;
+    const res = await fetch(`${SB_URL}/rest/v1/sync_state?uid=eq.${sb.userId}&select=at`, {
+      headers: sbAuthHeaders(sb),
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const at = Array.isArray(rows) && rows.length ? Number(rows[0].at) : 0;
+    if (!at) return;
+    if (!pollSeenAt) { pollSeenAt = at; return; } // 首次仅记基线（启动时已拉过一遍）
+    if (at > pollSeenAt) { pollSeenAt = at; autoSync(); }
+  } catch {}
+}, 10000);
+
+/* ---- Realtime：订阅 sync_state 触发行（Phoenix WS 协议） ---- */
+const rt = { ws: null, hb: null, swap: null, retryTimer: null, ref: 0, retry: 0 };
+
+async function startRealtime() {
+  if (!canSync() || (rt.ws && rt.ws.readyState <= 1)) return;
+  const user = currentUser();
+  const sb = await ensureSbSession(user.key);
+  if (!sb || (rt.ws && rt.ws.readyState <= 1)) return;
+  rt.retry = 0; // 显式发起（启动/登录/联网）重新计次
+  const url = SB_URL.replace(/^http/, "ws") + "/realtime/v1/websocket?apikey=" + SB_ANON + "&vsn=1.0.0";
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch {
+    scheduleRtRetry();
+    return;
+  }
+  rt.ws = ws;
+  ws.onopen = () => {
+    rt.retry = 0;
+    rt.ref++;
+    ws.send(
+      JSON.stringify({
+        topic: "phoenix",
+        event: "phx_join",
+        ref: String(rt.ref),
+        payload: {
+          access_token: sb.access_token,
+          config: {
+            postgres_changes: [
+              { event: "*", schema: "public", table: "sync_state", filter: "uid=eq." + sb.userId },
+            ],
+          },
+        },
+      })
+    );
+  };
+  ws.onmessage = (e) => {
+    let m;
+    try {
+      m = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    if (typeof m.topic === "string" && m.topic.indexOf("realtime:") === 0) scheduleRemoteSync();
+  };
+  ws.onclose = () => {
+    if (rt.ws === ws) rt.ws = null;
+    clearInterval(rt.hb);
+    rt.hb = null;
+    scheduleRtRetry();
+  };
+  rt.hb = setInterval(() => {
+    if (rt.ws && rt.ws.readyState === 1) {
+      rt.ref++;
+      rt.ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: String(rt.ref) }));
+    }
+  }, 25000);
+  // 每 45 分钟换会话重连一次（token 续期）
+  if (!rt.swap) rt.swap = setInterval(() => { stopRealtimeSoft(); startRealtime(); }, 45 * 60000);
+}
+
+function scheduleRtRetry() {
+  clearTimeout(rt.retryTimer);
+  if (rt.retry >= 6) return; // 放弃重连，等登录/联网事件再拉起
+  const delay = Math.min(30000, 1000 * 2 ** rt.retry);
+  rt.retry++;
+  rt.retryTimer = setTimeout(startRealtime, delay);
+}
+
+function stopRealtimeSoft() {
+  clearTimeout(rt.retryTimer);
+  clearInterval(rt.hb);
+  rt.hb = null;
+  if (rt.ws) {
+    try {
+      rt.ws.onclose = null;
+      rt.ws.close();
+    } catch {}
+    rt.ws = null;
+  }
+}
+
+function stopRealtime() {
+  clearInterval(rt.swap);
+  rt.swap = null;
+  stopRealtimeSoft();
+}
+
+/* ---- 接线 ---- */
+onTasksSaved = scheduleCloudPush;
+getSyncStatus = () => ({
+  pending: cloudPending,
+  busy: cloudBusy,
+  connected: !!(rt.ws && rt.ws.readyState === 1),
+});
+
+if (canSync()) {
+  startRealtime();
+  syncCloudFirstAt();
+  setTimeout(autoSync, 2500);
+}
+window.addEventListener("online", () => {
+  if (canSync()) {
+    startRealtime();
+    autoSync();
+  }
+});
+
+// 点击「云端同步」行：立即强制拉取合并一次（有待推送改动先推再拉）
+$("#cloudSyncRow").addEventListener("click", () => {
+  if (canSync() && !cloudBusy) autoSync(true);
+});
 
 // 到点桌面通知调度：due 落在最近 10 分钟内且未提醒过的未完成任务 → 弹系统通知
 // （窗口隐藏进托盘后定时器会被节流，10 分钟回溯窗口可保证不漏提醒）
