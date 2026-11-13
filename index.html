@@ -265,6 +265,18 @@
       <div class="setting-changelog">
         <div class="changelog-title">更新日志</div>
         <div class="changelog-entry">
+          <div class="changelog-head"><span class="cl-ver">v2.1.0</span><span class="cl-date">2026-11-12</span></div>
+          <ul>
+            <li>新增：谷歌账号登录，与华为账号并列；两种账号各自独立，数据互不相通</li>
+            <li>改进：云同步改为逐条操作流水——只上报本次改动，两端同时编辑同一任务不再互相覆盖整条任务</li>
+            <li>改进：离线期间积压的操作在联网后自动补传；重连时自动回看补齐可能的漏项，不产生重复任务</li>
+            <li>改进：同步状态标识简化，登录后直接显示「已连接」</li>
+            <li>修复：登录后部分按钮因初始化顺序失效的问题</li>
+            <li>修复：配置文件被外部工具写入后可能解析失败、导致设置被清空</li>
+            <li>改进：登录调试日志默认关闭，授权凭据不再落盘保存</li>
+          </ul>
+        </div>
+        <div class="changelog-entry">
           <div class="changelog-head"><span class="cl-ver">v2.0.0</span><span class="cl-date">2026-11-10</span></div>
           <ul>
             <li>新增：华为账号登录，与鸿蒙版共用同一云端身份</li>
@@ -340,12 +352,13 @@
     <div class="modal modal-sm">
       <h2 class="modal-title">账户中心</h2>
 
-      <!-- 未登录：华为账号登录 / 匿名体验 -->
+      <!-- 未登录：华为账号登录 / 谷歌账号登录 / 匿名体验 -->
       <div id="accountGuest">
         <button type="button" class="hw-login-btn" id="hwLoginBtn">华为账号登录</button>
+        <button type="button" class="hw-login-btn gg" id="ggLoginBtn">谷歌账号登录</button>
         <div class="hw-divider"><span>或</span></div>
         <button type="button" class="btn ghost hw-anon-btn" id="anonEnterBtn">匿名体验</button>
-        <p class="acct-hint">匿名体验：数据仅保存在本设备。登录华为账号后即可使用多端云同步。</p>
+        <p class="acct-hint">匿名体验：数据仅保存在本设备。登录华为/谷歌账号后即可使用多端云同步（两种账号数据相互独立）。</p>
       </div>
 
       <!-- 已登录 -->

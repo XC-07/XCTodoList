@@ -4,8 +4,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 // 渲染层通过 window.electronAPI 访问 Electron 能力；Web 模式下该对象不存在
 contextBridge.exposeInMainWorld("electronAPI", {
-  isElectron: true,
-
   // 桌面通知
   notify(title, body) {
     ipcRenderer.send("notify", title, body);
@@ -43,5 +41,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 华为账号 OAuth 登录（主进程内嵌授权窗 + PKCE 换 token）
   hwLogin() {
     return ipcRenderer.invoke("hw-login");
+  },
+
+  // 谷歌账号 OAuth 登录（主进程 loopback 回调 + 系统浏览器 + PKCE）
+  googleLogin() {
+    return ipcRenderer.invoke("google-login");
   },
 });

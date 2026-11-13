@@ -10,3 +10,10 @@ release/
 *.log
 Thumbs.db
 .DS_Store
+
+# 本地工具产物与历史预览稿（不影响运行，不入库）
+.screenshots/
+.trae/specs/
+.trae-html-share-packages/
+ui-style-preview/
+supabase/

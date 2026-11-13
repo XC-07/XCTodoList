@@ -750,10 +750,6 @@ html[data-style="soft"] .modal {
   color: var(--ink);
 }
 .field .required { color: var(--danger); }
-
-.code-row { display: flex; gap: 8px; }
-.code-row input { flex: 1; }
-.code-row .btn { white-space: nowrap; flex-shrink: 0; }
 .field .optional { color: var(--faint); font-weight: 400; font-size: 12px; }
 
 .field input,
@@ -947,6 +943,14 @@ html[data-style="soft"] .setting-block { background: color-mix(in srgb, var(--bg
 }
 .hw-login-btn:hover { filter: brightness(1.08); }
 .hw-login-btn.busy { opacity: 0.6; pointer-events: none; }
+.hw-login-btn.gg {
+  margin-top: 10px;
+  background: #fff;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  letter-spacing: 0.5px;
+}
+.hw-login-btn.gg:hover { background: #f7f8f8; filter: none; }
 
 .acct-profile { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 

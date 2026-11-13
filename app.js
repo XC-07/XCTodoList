@@ -37,6 +37,14 @@ const LS = (() => {
 /* ---------------- 数据层 ---------------- */
 const STORAGE_KEY = "todo.tasks.v1";
 const SETTINGS_KEY = "todo.settings.v1";
+/* v5 同步层存储键：必须在此声明（启动时即会用到，
+ * 若放在文件后段的 v5 区块会触发 TDZ ReferenceError 中断整个脚本） */
+const OP_OUTBOX_KEY = "todolist.ops.outbox.v1";
+const OP_CURSOR_KEY = "todolist.ops.cursor.v1";
+const OP_APPLIED_KEY = "todolist.ops.applied.v1";
+const OP_META_KEY = "todolist.ops.taskmeta.v1";
+const OP_CKPT_KEY = "todolist.ops.ckpt.v1";
+const DEVICE_ID_KEY = "todolist.deviceId.v1";
 
 let tasks = loadTasks();
 let settings = Object.assign(
@@ -74,16 +82,34 @@ function loadTasks() {
 function saveTasks() {
   if (!applyingRemote) {
     // 逐条比对签名：内容变了的盖 updatedAt；消失的记删除墓碑（v4 合并依据）
+    // v5：diff 的同时产出操作 op（add/update/delete）入 outbox
     const now = Date.now();
+    const recordOps = oplogActive();
+    const added = [];
+    const changed = [];
+    const removed = [];
     const next = new Map();
     for (const t of tasks) {
       const sig = JSON.stringify(packTask(t));
       next.set(t.id, sig);
-      if (lastSig.size && lastSig.get(t.id) !== sig) t.updatedAt = now;
+      if (lastSig.size && lastSig.get(t.id) !== sig) {
+        const oldSig = lastSig.get(t.id);
+        t.updatedAt = now;
+        if (recordOps) {
+          if (oldSig === undefined) added.push(t.id);
+          else {
+            try { changed.push({ id: t.id, oldPack: JSON.parse(oldSig) }); } catch {}
+          }
+        }
+      }
     }
-    if (lastSig.size) for (const id of lastSig.keys()) if (!next.has(id)) deletions[id] = now;
+    if (lastSig.size) for (const id of lastSig.keys()) if (!next.has(id)) {
+      deletions[id] = now;
+      if (recordOps) removed.push(id);
+    }
     lastSig = next;
     saveDeletions();
+    if (recordOps) emitTaskOps(added, changed, removed, now);
   } else {
     lastSig = new Map(tasks.map((t) => [t.id, JSON.stringify(packTask(t))]));
   }
@@ -100,7 +126,17 @@ function loadSettings() {
 }
 
 function saveSettings() {
-  if (!applyingRemote) settings.modified = Date.now();
+  if (!applyingRemote) {
+    settings.modified = Date.now();
+    // v5：设置内容变了才记一条 settings op（modified 本身不参与比较）
+    if (oplogActive()) {
+      const sig = settingsContentSig();
+      if (sig !== lastSettingsSig) {
+        lastSettingsSig = sig;
+        enqueueOp({ type: "settings", task_id: null, payload: settingsSubset(), client_ts: settings.modified });
+      }
+    }
+  }
   LS.setItem(SETTINGS_KEY, JSON.stringify(settings));
   if (onTasksSaved) onTasksSaved();
 }
@@ -1386,11 +1422,13 @@ function renderAccountModal() {
     }
     // 旧版本创建的匿名账户名沿用显示为「匿名用户」
     $("#acctNick").textContent = user.name === "匿名旅人" ? "匿名用户" : user.name;
-    // 与鸿蒙版一致：华为账户副标题展示 UID 前 12 位（key 格式 hwid:openID）
+    // 与鸿蒙版一致：账户副标题展示 UID 前 12 位（key 格式 hwid:openID / ggl:sub）
     $("#acctMail").textContent =
       user.provider === "hwid"
         ? "华为账号 · UID: " + user.key.slice(5, 17)
-        : user.provider === "anon" ? "匿名体验" : "本地账户";
+        : user.provider === "google"
+          ? "谷歌账号 · UID: " + user.key.slice(4, 16)
+          : user.provider === "anon" ? "匿名体验" : "本地账户";
     $("#acctStatTasks").textContent = tasks.length;
     $("#acctStatDone").textContent = tasks.filter((t) => t.done).length;
     // 陪伴天数只认云端起点；无云端起点（匿名/未连云）隐藏该栏（同鸿蒙版）
@@ -1398,16 +1436,16 @@ function renderAccountModal() {
     if (user.cloudFirstAt) {
       $("#acctStatDays").textContent = Math.max(1, Math.ceil((Date.now() - user.cloudFirstAt) / 86400000));
     }
-    // 云服务状态：仅华为账号且已建立 Supabase 会话时自动同步生效
+    // 云服务状态：华为/谷歌账号且已建立 Supabase 会话时自动同步生效
     const acc = loadAccounts()[user.key] || {};
-    const hasCloud = user.provider === "hwid" && acc.sb && acc.sb.userId;
+    const hasCloud = ["hwid", "google"].includes(user.provider) && acc.sb && acc.sb.userId;
     const st = getSyncStatus ? getSyncStatus() : { pending: false, busy: false, connected: false };
     $("#cloudSyncBadge").classList.toggle("on", !!hasCloud);
     $("#cloudSyncBadge").textContent = hasCloud ? "已连接" : "待开启";
     $("#cloudSyncDesc").textContent = !hasCloud
-      ? user.provider === "hwid"
-        ? "云端会话未建立，重新登录华为账号可重试"
-        : "登录华为账号后自动开启云同步"
+      ? ["hwid", "google"].includes(user.provider)
+        ? "云端会话未建立，重新登录可重试"
+        : "登录华为/谷歌账号后自动开启云同步"
       : st.busy
         ? "同步中…"
         : st.pending
@@ -1464,12 +1502,14 @@ $("#logoutBtn").addEventListener("click", () => {
       const cur = currentUser();
       const accounts = loadAccounts();
       const acc = cur ? accounts[cur.key] : null;
-      const connected = cur && cur.provider === "hwid" && acc && acc.sb;
+      const connected = cur && ["hwid", "google"].includes(cur.provider) && acc && acc.sb;
       if (acc) {
         delete acc.sb;
         delete acc.lastSyncMs;
+        delete acc.v5Migrated;
         saveAccounts(accounts);
       }
+      resetOplogLocal(); // 游标/去重环/outbox 跟着账号走，退出即清空
       LS.removeItem(SESSION_KEY);
       if (connected) {
         // 数据跟着账户走：本地任务清空（不记墓碑、不触发推送），重新登录后自动同步回来
@@ -1939,6 +1979,60 @@ const ELECTRON = typeof window !== "undefined" ? window.electronAPI || null : nu
   });
 }
 
+/* ---------------- 谷歌账号登录（Electron：系统浏览器 + 本机回环回调 + PKCE） ---------------- */
+{
+  const GG_LABEL = "谷歌账号登录";
+  $("#ggLoginBtn").addEventListener("click", async () => {
+    if (!ELECTRON || !ELECTRON.googleLogin) {
+      toast("谷歌账号登录需在桌面版中使用");
+      return;
+    }
+    const btn = $("#ggLoginBtn");
+    if (btn.classList.contains("busy")) return;
+    btn.classList.add("busy");
+    btn.textContent = "等待授权完成…";
+    let r;
+    try {
+      r = await ELECTRON.googleLogin();
+    } catch (e) {
+      r = { error: (e && e.message) || String(e) };
+    }
+    btn.classList.remove("busy");
+    btn.textContent = GG_LABEL;
+    if (!r) return;
+    if (r.error) {
+      if (r.error !== "canceled") toast("谷歌登录失败：" + r.error);
+      return;
+    }
+    const key = "ggl:" + r.sub;
+    const accounts = loadAccounts();
+    if (!accounts[key]) {
+      accounts[key] = { name: r.name || "谷歌用户", provider: "google", createdAt: Date.now() };
+    } else if (r.name && accounts[key].provider === "google") {
+      accounts[key].name = r.name; // 跟随谷歌昵称更新
+    }
+    delete accounts[key].firstAt; // 陪伴起点唯一来源为云端 profiles.first_at
+    btn.textContent = "连接云端…";
+    // 上报本地最早任务创建时间：首次建号时云端 first_at 以它为准
+    let firstTaskAt = 0;
+    for (const t of tasks) if (t.createdAt && (!firstTaskAt || t.createdAt < firstTaskAt)) firstTaskAt = t.createdAt;
+    const ex = await sbExchange(r, firstTaskAt, "google");
+    btn.textContent = GG_LABEL; // 无论成败都恢复按钮文案
+    if (ex.sb) accounts[key].sb = ex.sb;
+    saveAccounts(accounts);
+    LS.setItem(SESSION_KEY, key);
+    closeAccountModal();
+    renderAccountModal();
+    if (ex.sb) {
+      toast(`谷歌账号登录成功，欢迎你，${accounts[key].name}`);
+      startRealtime();
+      setTimeout(autoSync, 800); // 登录后自动拉取合并（本地为空则回填云端数据）
+    } else {
+      toast(`已登录 ${accounts[key].name}，但云端会话获取失败：${ex.err}`);
+    }
+  });
+}
+
 /* ---------------- 云端同步（Supabase Storage · 全自动合并） ----------------
  * 与鸿蒙版共用同一 Supabase 项目与 auth 用户。
  * 桌面端存档为 gzip：{sbUserId}/sync.json.gz（v4 信封：updatedAt + 删除墓碑）；
@@ -1948,15 +2042,20 @@ const ELECTRON = typeof window !== "undefined" ? window.electronAPI || null : nu
 const SB_URL = "https://rqrijcjzhipcwdrgrgwf.supabase.co";
 const SB_ANON = "sb_publishable_7V8Ov31ZYw2LpP5PgbkswQ_PF3gw5C7";
 
-// 华为凭证 → Supabase 会话（Edge Function 双模式：idToken 验签 / access_token 服务端复核）
+// 第三方凭证 → Supabase 会话（Edge Function：huawei-auth / google-auth）
 // 成功返回 { sb }，失败返回 { err }（带原因，便于区分断网/服务端错误）
-async function sbExchange(r, firstTaskAt) {
+async function sbExchange(r, firstTaskAt, provider) {
+  const isGoogle = provider === "google";
   try {
-    const res = await fetch(`${SB_URL}/functions/v1/huawei-auth`, {
+    const res = await fetch(`${SB_URL}/functions/v1/${isGoogle ? "google-auth" : "huawei-auth"}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: SB_ANON },
       // firstTaskAt：本地最早任务创建时间，首次建号时云端 first_at 以它为准
-      body: JSON.stringify({ idToken: r.idToken || "", huaweiAccessToken: r.accessToken || "", firstTaskAt: firstTaskAt || 0 }),
+      body: JSON.stringify(
+        isGoogle
+          ? { idToken: r.idToken || "", firstTaskAt: firstTaskAt || 0 }
+          : { idToken: r.idToken || "", huaweiAccessToken: r.accessToken || "", firstTaskAt: firstTaskAt || 0 }
+      ),
     });
     if (!res.ok) return { err: "云端返回 HTTP " + res.status };
     const d = await res.json();
@@ -2013,7 +2112,7 @@ const sbAuthHeaders = (sb) => ({ apikey: SB_ANON, Authorization: `Bearer ${sb.ac
 // 已登录但本地会话缓存里没有云端起点（老版本升级/换设备）：启动时从 profiles 拉一次
 async function syncCloudFirstAt() {
   const user = currentUser();
-  if (!user || user.provider !== "hwid") return;
+  if (!user || !["hwid", "google"].includes(user.provider)) return;
   const accounts = loadAccounts();
   const acc = accounts[user.key];
   if (!acc || !acc.sb) return;
@@ -2038,60 +2137,7 @@ async function syncCloudFirstAt() {
   } catch {}
 }
 
-// v4 信封：任务（含 updatedAt）+ 删除墓碑 + 设置（含修改时刻）
-function buildCloudEnvelope() {
-  return {
-    app: "todolist",
-    v: 4,
-    at: new Date().toISOString(),
-    tasks: tasks.map(packTask),
-    deletions: Object.entries(deletions),
-    settings: {
-      theme: settings.theme,
-      sortMode: settings.sortMode,
-      sound: settings.sound,
-      notifications: settings.notifications,
-      style: settings.style,
-      accent: settings.accent,
-      modified: settings.modified || 0,
-    },
-  };
-}
-
-async function cloudPush() {
-  const user = currentUser();
-  if (!user) throw new Error("未登录");
-  const sb = await ensureSbSession(user.key);
-  if (!sb) throw new Error("云端会话已失效，请重新登录华为账号");
-  const payload = JSON.stringify(buildCloudEnvelope());
-  // 桌面端上传 gzip（CompressionStream 不可用时退化为明文）
-  let body = payload;
-  let ctype = "application/json";
-  if (typeof CompressionStream !== "undefined") {
-    body = await gzipText(payload);
-    ctype = "application/gzip";
-  }
-  const res = await fetch(sbStorageUrl(sb, "sync.json.gz"), {
-    method: "POST",
-    headers: { ...sbAuthHeaders(sb), "Content-Type": ctype, "x-upsert": "true" },
-    body,
-  });
-  if (!res.ok) throw new Error("上传失败（HTTP " + res.status + "）");
-  // 写触发行：其他设备的 Realtime 订阅据此拉取合并（失败不影响存档本身）
-  try {
-    await fetch(`${SB_URL}/rest/v1/sync_state?on_conflict=uid`, {
-      method: "POST",
-      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
-      body: JSON.stringify({ uid: sb.userId, at: Date.now() }),
-    });
-  } catch {}
-  const accounts = loadAccounts();
-  if (accounts[user.key]) {
-    accounts[user.key].lastSyncMs = Date.now();
-    saveAccounts(accounts);
-  }
-}
-
+// v4 存档只读通道：仅供 v4→v5 首迁取最后一次基线（正常同步已走 op-log，不再写 Storage）
 // 返回 null 表示云端尚无存档；抛错表示失败
 async function cloudPull() {
   const user = currentUser();
@@ -2129,6 +2175,7 @@ function applyCloudSettings(s) {
   if (["things", "soft"].includes(s.style)) settings.style = s.style;
   if (VALID_ACCENTS.has(s.accent)) settings.accent = s.accent;
   settings.modified = remoteModified || Date.now();
+  lastSettingsSig = settingsContentSig(); // 远端应用后同步基线，避免本地 saveSettings 误记 op
   saveSettings();
   applyTheme();
   renderStyleSeg();
@@ -2154,7 +2201,7 @@ let pollSeenAt = 0; // 轮询已见的触发行时间戳（避免重复下载）
 
 function canSync() {
   const user = currentUser();
-  if (!user || user.provider !== "hwid") return false;
+  if (!user || !["hwid", "google"].includes(user.provider)) return false;
   const acc = loadAccounts()[user.key];
   return !!(acc && acc.sb && acc.sb.userId);
 }
@@ -2257,6 +2304,427 @@ function applyMerged(merged) {
   checkReminders();
 }
 
+/* ============================================================
+ * v5 同步层：操作流水（op-log）
+ * 本地每个改动记一条 op（add/update/delete/settings）→ outbox →
+ * 批量插入 tasks_op 表（op_id 幂等）；拉取按服务端 seq 游标增量回放。
+ * 回放规则：update/delete 落在不存在的任务 → 跳过（删除赢）；
+ *           add 落在不存在的任务 → 插入（复活/重导入唯一入口）。
+ * 同步模式已定稿为纯 op-log（原灰度开关 todolist.sync.v 已移除）。
+ * ============================================================ */
+/* 存储键常量已提前到数据层声明（见文件顶部，避免 TDZ） */
+
+function deviceId() {
+  let d = LS.getItem(DEVICE_ID_KEY);
+  if (!d) {
+    d = uid();
+    LS.setItem(DEVICE_ID_KEY, d);
+  }
+  return d;
+}
+
+// 参与同步的设置子集（v4 信封与 v5 settings op 共用）
+function settingsSubset() {
+  return {
+    theme: settings.theme,
+    sortMode: settings.sortMode,
+    sound: settings.sound,
+    notifications: settings.notifications,
+    style: settings.style,
+    accent: settings.accent,
+    modified: settings.modified || 0,
+  };
+}
+function settingsContentSig() {
+  const s = settingsSubset();
+  delete s.modified; // modified 每次必变，不参与内容比较
+  return JSON.stringify(s);
+}
+let lastSettingsSig = settingsContentSig();
+
+let opOutbox = (() => {
+  try {
+    const a = JSON.parse(LS.getItem(OP_OUTBOX_KEY));
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+})();
+let opApplied = (() => {
+  try {
+    const a = JSON.parse(LS.getItem(OP_APPLIED_KEY));
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+})();
+let opAppliedSet = new Set(opApplied);
+let opTaskMeta = (() => {
+  try {
+    return JSON.parse(LS.getItem(OP_META_KEY)) || {};
+  } catch {
+    return {};
+  }
+})();
+let opCursor = Number(LS.getItem(OP_CURSOR_KEY)) || 0;
+let ckptState = (() => {
+  try {
+    return JSON.parse(LS.getItem(OP_CKPT_KEY)) || { at: 0, applied: 0 };
+  } catch {
+    return { at: 0, applied: 0 };
+  }
+})();
+
+function saveOutbox() {
+  LS.setItem(OP_OUTBOX_KEY, JSON.stringify(opOutbox));
+}
+function saveAppliedRing() {
+  LS.setItem(OP_APPLIED_KEY, JSON.stringify(opApplied));
+}
+function saveTaskMeta() {
+  LS.setItem(OP_META_KEY, JSON.stringify(opTaskMeta));
+}
+function saveCursor() {
+  LS.setItem(OP_CURSOR_KEY, String(opCursor));
+}
+
+function markApplied(opId) {
+  if (opAppliedSet.has(opId)) return;
+  opAppliedSet.add(opId);
+  opApplied.push(opId);
+  while (opApplied.length > 500) opAppliedSet.delete(opApplied.shift());
+  saveAppliedRing();
+}
+
+// op-log 生效：云会话已建立、本账号已完成首迁
+function oplogActive() {
+  const user = currentUser();
+  if (!user || !["hwid", "google"].includes(user.provider)) return false;
+  const acc = loadAccounts()[user.key];
+  return !!(acc && acc.sb && acc.sb.userId && acc.v5Migrated);
+}
+
+function enqueueOp(op) {
+  const rec = {
+    op_id: uid(),
+    type: op.type,
+    task_id: op.task_id || null,
+    payload: op.payload || {},
+    client_ts: op.client_ts || Date.now(),
+    device_id: deviceId(),
+  };
+  opOutbox.push(rec);
+  markApplied(rec.op_id); // 本地状态已反映该操作，回放拉回时跳过
+  saveOutbox();
+}
+
+// saveTasks 的 diff 结果 → op（update 只带变更字段，null 表示删除该字段）
+function emitTaskOps(added, changed, removed, now) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  for (const id of added) {
+    const t = byId.get(id);
+    if (t) enqueueOp({ type: "add", task_id: id, payload: packTask(t), client_ts: t.updatedAt || now });
+  }
+  for (const c of changed) {
+    const t = byId.get(c.id);
+    if (!t) continue;
+    const newPack = packTask(t);
+    const diff = {};
+    let has = false;
+    for (const k in newPack) {
+      if (JSON.stringify(newPack[k]) !== JSON.stringify(c.oldPack[k])) {
+        diff[k] = newPack[k];
+        has = true;
+      }
+    }
+    for (const k in c.oldPack) {
+      if (!(k in newPack)) {
+        diff[k] = null;
+        has = true;
+      }
+    }
+    diff.u = t.updatedAt || now; // updatedAt 随操作走，回放端据此保持时间语义
+    if (has) enqueueOp({ type: "update", task_id: c.id, payload: diff, client_ts: t.updatedAt || now });
+  }
+  for (const id of removed) enqueueOp({ type: "delete", task_id: id, payload: {}, client_ts: now });
+}
+
+// 退出登录时清空 op-log 本地状态（游标/去重环跟着账号走，不能串号）
+function resetOplogLocal() {
+  opOutbox = [];
+  opApplied = [];
+  opAppliedSet = new Set();
+  opTaskMeta = {};
+  opCursor = 0;
+  ckptState = { at: 0, applied: 0 };
+  LS.removeItem(OP_OUTBOX_KEY);
+  LS.removeItem(OP_APPLIED_KEY);
+  LS.removeItem(OP_META_KEY);
+  LS.removeItem(OP_CURSOR_KEY);
+  LS.removeItem(OP_CKPT_KEY);
+}
+
+/* ---- 推送：outbox 批量插入 tasks_op（幂等），成功后写 sync_state 门铃 ---- */
+async function pushOps() {
+  if (!opOutbox.length) return;
+  const user = currentUser();
+  if (!user) return;
+  const sb = await ensureSbSession(user.key);
+  if (!sb) throw new Error("云端会话已失效");
+  while (opOutbox.length) {
+    const batch = opOutbox.slice(0, 100).map((o) => ({
+      uid: sb.userId,
+      op_id: o.op_id,
+      type: o.type,
+      task_id: o.task_id,
+      payload: o.payload,
+      client_ts: o.client_ts,
+      device_id: o.device_id,
+    }));
+    const res = await fetch(`${SB_URL}/rest/v1/tasks_op`, {
+      method: "POST",
+      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates" },
+      body: JSON.stringify(batch),
+    });
+    if (!res.ok) throw new Error("操作推送失败（HTTP " + res.status + "）");
+    opOutbox.splice(0, batch.length);
+    saveOutbox();
+  }
+  // 门铃：其他设备 Realtime/轮询感知后拉取（机制与 v4 完全一致）
+  try {
+    await fetch(`${SB_URL}/rest/v1/sync_state?on_conflict=uid`, {
+      method: "POST",
+      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ uid: sb.userId, at: Date.now() }),
+    });
+  } catch {}
+  try {
+    await fetch(`${SB_URL}/rest/v1/sync_cursor?on_conflict=uid,device_id`, {
+      method: "POST",
+      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ uid: sb.userId, device_id: deviceId(), last_seq: opCursor, updated_at: new Date().toISOString() }),
+    });
+  } catch {}
+  const accounts = loadAccounts();
+  if (accounts[user.key]) {
+    accounts[user.key].lastSyncMs = Date.now();
+    saveAccounts(accounts);
+  }
+}
+
+/* ---- 回放：按 seq 升序应用一批 op（期间 applyingRemote 抑制 op 再产出） ---- */
+function applyTaskOp(op, lookback) {
+  const i = tasks.findIndex((t) => t.id === op.task_id);
+  if (op.type === "update" && i < 0) return false; // 删除赢：改不存在的任务直接跳过
+  // 回看补偿路径可能乱序到达：用 client_ts+device_id 做 LWW 守卫，旧操作不覆盖新操作
+  if (lookback && i >= 0) {
+    const m = opTaskMeta[op.task_id];
+    if (m && (op.client_ts < m[0] || (op.client_ts === m[0] && String(op.device_id || "") <= String(m[1] || "")))) return false;
+  }
+  let pack;
+  if (i >= 0) {
+    pack = packTask(tasks[i]);
+    for (const k in op.payload) {
+      if (op.payload[k] === null) delete pack[k];
+      else pack[k] = op.payload[k];
+    }
+  } else {
+    if (op.type !== "add") return false;
+    pack = { ...op.payload }; // add 的 payload 是整条 packTask
+  }
+  const t = unpackTask(pack);
+  if (!t || !t.id) return false;
+  if (i >= 0) tasks[i] = t;
+  else tasks.push(t);
+  opTaskMeta[t.id] = [Number(op.client_ts) || 0, String(op.device_id || "")];
+  return true;
+}
+
+function replayOps(ops, lookback) {
+  if (!ops.length) return 0;
+  pushHistory(); // 远端批次应用前先存快照（撤销依据）
+  applyingRemote = true;
+  let applied = 0;
+  let changed = false;
+  try {
+    for (const op of ops) {
+      if (!op || !op.op_id || opAppliedSet.has(op.op_id)) continue;
+      const payload = op.payload || {};
+      if (op.type === "settings") {
+        if (applyCloudSettings(payload)) changed = true;
+      } else if (op.type === "add" || op.type === "update") {
+        if (applyTaskOp(op, lookback)) changed = true;
+      } else if (op.type === "delete") {
+        const i = tasks.findIndex((t) => t.id === op.task_id);
+        if (i >= 0) {
+          tasks.splice(i, 1);
+          delete opTaskMeta[op.task_id];
+          changed = true;
+        }
+      }
+      markApplied(op.op_id);
+      applied++;
+    }
+    if (changed) {
+      saveTasks(); // applyingRemote=true：只落盘 + 刷新签名，不产出 op
+      saveTaskMeta();
+      render();
+      checkReminders();
+    } else {
+      popHistory();
+    }
+  } finally {
+    applyingRemote = false;
+  }
+  return applied;
+}
+
+/* ---- 掉队重建：本地游标小于云端最小 seq（流水被修剪）→ 用检查点快照整包替换 ---- */
+async function rebuildFromCheckpoint(sb) {
+  const res = await fetch(`${SB_URL}/rest/v1/sync_checkpoint?uid=eq.${sb.userId}&select=seq,snapshot`, {
+    headers: sbAuthHeaders(sb),
+  });
+  if (!res.ok) throw new Error("检查点读取失败（HTTP " + res.status + "）");
+  const rows = await res.json();
+  if (!rows.length) {
+    opCursor = 0; // 无检查点（理论上修剪不会发生）：游标归零重新拉
+    saveCursor();
+    return;
+  }
+  const ck = rows[0];
+  const snap = ck.snapshot || {};
+  pushHistory();
+  applyingRemote = true;
+  try {
+    if (Array.isArray(snap.tasks)) tasks = snap.tasks.map(unpackTask).filter(Boolean);
+    saveTasks();
+    if (snap.settings) applyCloudSettings(snap.settings);
+    render();
+    checkReminders();
+  } finally {
+    applyingRemote = false;
+  }
+  opCursor = Number(ck.seq) || 0;
+  saveCursor();
+  toast("云端流水已归档，已从快照恢复基线");
+}
+
+/* ---- 检查点：每应用 >500 条或超 14 天，把本地全量 upsert 到 sync_checkpoint ---- */
+async function maybeCheckpoint(sb, appliedCount) {
+  ckptState.applied += appliedCount;
+  const stale = ckptState.at > 0 ? Date.now() - ckptState.at > 14 * 86400000 : appliedCount > 0;
+  if (ckptState.applied < 500 && !stale) {
+    LS.setItem(OP_CKPT_KEY, JSON.stringify(ckptState));
+    return;
+  }
+  try {
+    const res = await fetch(`${SB_URL}/rest/v1/sync_checkpoint?on_conflict=uid`, {
+      method: "POST",
+      headers: { ...sbAuthHeaders(sb), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ uid: sb.userId, seq: opCursor, snapshot: { tasks: tasks.map(packTask), settings: settingsSubset() } }),
+    });
+    if (res.ok) ckptState = { at: Date.now(), applied: 0 };
+  } catch {}
+  LS.setItem(OP_CKPT_KEY, JSON.stringify(ckptState));
+}
+
+/* ---- 拉取：游标增量 + 回看补偿（seq 空洞自愈）+ 掉队重建 ---- */
+async function pullOps(lookback) {
+  const user = currentUser();
+  if (!user) return 0;
+  const sb = await ensureSbSession(user.key);
+  if (!sb) throw new Error("云端会话已失效");
+  let from = lookback ? Math.max(0, opCursor - 200) : opCursor;
+  if (!lookback && opCursor > 0) {
+    // 掉队检测：云端最小 seq 已越过本地游标 → 流水被修剪过
+    try {
+      const r0 = await fetch(`${SB_URL}/rest/v1/tasks_op?select=seq&uid=eq.${sb.userId}&order=seq.asc&limit=1`, {
+        headers: sbAuthHeaders(sb),
+      });
+      if (r0.ok) {
+        const rows0 = await r0.json();
+        if (rows0.length && Number(rows0[0].seq) > opCursor + 1) {
+          await rebuildFromCheckpoint(sb);
+          from = opCursor;
+        }
+      }
+    } catch {}
+  }
+  let total = 0;
+  for (;;) {
+    const res = await fetch(
+      `${SB_URL}/rest/v1/tasks_op?uid=eq.${sb.userId}&seq=gt.${from}&order=seq.asc&limit=500`,
+      { headers: sbAuthHeaders(sb) }
+    );
+    if (!res.ok) throw new Error("操作拉取失败（HTTP " + res.status + "）");
+    const ops = await res.json();
+    if (!Array.isArray(ops) || !ops.length) break;
+    total += replayOps(ops, lookback);
+    from = Number(ops[ops.length - 1].seq);
+    if (!lookback) {
+      opCursor = from;
+      saveCursor();
+    }
+    if (ops.length < 500) break;
+  }
+  if (total > 0) {
+    await maybeCheckpoint(sb, total);
+    const accounts = loadAccounts();
+    if (accounts[user.key]) {
+      accounts[user.key].lastSyncMs = Date.now();
+      saveAccounts(accounts);
+    }
+  }
+  return total;
+}
+
+/* ---- 首迁（v4→v5，每账号一次）：备份 → 最后一次 v4 合并 → 基线转 add 流水 ---- */
+async function migrateV4ToV5() {
+  const user = currentUser();
+  if (!user) return false;
+  const accounts = loadAccounts();
+  const acc = accounts[user.key];
+  if (!acc || !acc.sb || acc.v5Migrated) return true;
+  const sb = await ensureSbSession(user.key);
+  if (!sb) return false;
+  // 1) 迁移前本地备份（一次性，防回滚）+ 历史快照
+  try {
+    LS.setItem(
+      "todolist.preV5Backup.v1",
+      JSON.stringify({ at: Date.now(), tasks: JSON.parse(JSON.stringify(tasks)), deletions: { ...deletions }, settings: { ...settings } })
+    );
+  } catch {}
+  pushHistory();
+  // 2) 最后一次 v4 拉取合并，得到基线任务集
+  try {
+    const data = await cloudPull();
+    if (data) {
+      applyingRemote = true;
+      applyCloudSettings(data.settings);
+      applyingRemote = false;
+      const merged = mergeRemote(data);
+      if (merged.changed > 0) applyMerged(merged);
+    }
+  } catch {}
+  // 3) 基线每条任务一条 add（client_ts=任务自身 updatedAt）+ 一条 settings；墓碑不迁移
+  const now = Date.now();
+  for (const t of tasks) {
+    const tomb = deletions[t.id] || 0;
+    if (tomb && tomb >= (t.updatedAt || 0)) continue;
+    enqueueOp({ type: "add", task_id: t.id, payload: packTask(t), client_ts: t.updatedAt || t.createdAt || now });
+  }
+  enqueueOp({ type: "settings", task_id: null, payload: settingsSubset(), client_ts: settings.modified || now });
+  // 4) 推送；失败则 outbox 保留，下次 autoSync 重试（v5Migrated 不置位）
+  try {
+    await pushOps();
+  } catch {
+    return false;
+  }
+  acc.v5Migrated = true;
+  saveAccounts(accounts);
+  return true;
+}
+
 /* ---- 自动推送：2s 防抖，空数据 + 无墓碑时绝不推送 ---- */
 function scheduleCloudPush() {
   if (!canSync() || applyingRemote) return;
@@ -2269,7 +2737,8 @@ function scheduleCloudPush() {
 async function doAutoPush() {
   clearTimeout(pushTimer);
   if (!cloudPending) return;
-  if (tasks.length === 0 && Object.keys(deletions).length === 0) {
+  // 纯流水：outbox 为空时无事可做
+  if (opOutbox.length === 0) {
     cloudPending = false;
     return;
   }
@@ -2278,7 +2747,7 @@ async function doAutoPush() {
   cloudBusy = true;
   refreshSyncStatus(); // 与手机版一致：推送开始即显示"同步中…"
   try {
-    await cloudPush();
+    if (oplogActive()) await pushOps(); // 操作流水推送
     lastPushAt = Date.now();
     pollSeenAt = Math.max(pollSeenAt, lastPushAt); // 自己写的触发行不必再拉
   } catch {
@@ -2293,34 +2762,37 @@ async function doAutoPush() {
 /* ---- 自动拉取 + 合并（manual=手动点击触发，完成后统一提示"同步完成"） ---- */
 async function autoSync(manual) {
   if (!canSync() || cloudBusy) return;
+  // 首迁（每账号一次）：未迁移时先转基线流水，失败则下轮重试
+  {
+    const acc = loadAccounts()[currentUser().key];
+    if (acc && acc.sb && !acc.v5Migrated) {
+      cloudBusy = true;
+      refreshSyncStatus();
+      let mok = false;
+      try {
+        mok = await migrateV4ToV5();
+      } catch {}
+      cloudBusy = false;
+      refreshSyncStatus();
+      if (!mok) {
+        if (manual) toast("同步初始化失败，请稍后重试");
+        return;
+      }
+    }
+  }
   if (cloudPending) await doAutoPush();
-  if (!canSync()) return;
+  if (!canSync() || !oplogActive()) return;
   cloudBusy = true;
   refreshSyncStatus();
   let ok = false;
   try {
-    const data = await cloudPull();
-    if (data) pollSeenAt = Math.max(pollSeenAt, (Number(data.at) || Date.now()) + 5000); // 本次已覆盖该存档，轮询不必重复拉
-    if (!data) {
-      // 云端还没有存档：本地有数据则做首次上传
-      if (tasks.length) {
-        await cloudPush();
-        lastPushAt = Date.now();
-      }
-      ok = true;
-      return;
-    }
-    applyingRemote = true;
-    applyCloudSettings(data.settings);
-    applyingRemote = false;
-    pushHistory(); // 合并会改动 deletions，快照必须先于合并保存
-    const merged = mergeRemote(data);
-    if (merged.changed > 0) {
-      applyMerged(merged);
-      if (!manual) toast(`已同步云端变更 · 共 ${merged.count} 条任务`);
-    } else {
-      popHistory();
-    }
+    // 纯流水读路径：推待发改动 → 按游标增量拉取回放
+    try {
+      await pushOps();
+      lastPushAt = Date.now(); // 自己写的门铃不必再触发拉取
+    } catch {}
+    await pullOps(false);
+    pollSeenAt = Math.max(pollSeenAt, Date.now());
     ok = true;
   } catch {
     if (manual) toast("同步失败，请检查网络");
@@ -2379,6 +2851,10 @@ async function startRealtime() {
   ws.onopen = () => {
     rt.retry = 0;
     rt.ref++;
+    // 重连即回看补偿一次：自愈 seq 空洞（并发提交可见性延迟）
+    setTimeout(() => {
+      if (oplogActive() && !cloudBusy) pullOps(true).catch(() => {});
+    }, 1500);
     ws.send(
       JSON.stringify({
         topic: "phoenix",
@@ -2454,6 +2930,12 @@ getSyncStatus = () => ({
   busy: cloudBusy,
   connected: !!(rt.ws && rt.ws.readyState === 1),
 });
+
+/* ---- v5 回看补偿：空闲 60s 定期重拉游标前 200 条，去重环过滤已应用 ---- */
+setInterval(() => {
+  if (!oplogActive() || cloudBusy || cloudPending) return;
+  pullOps(true).catch(() => {});
+}, 60000);
 
 if (canSync()) {
   startRealtime();

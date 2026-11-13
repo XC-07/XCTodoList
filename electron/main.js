@@ -15,9 +15,11 @@ const {
   Notification,
   nativeImage,
   session,
+  shell,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
 const crypto = require("crypto");
 
 const ROOT = path.join(__dirname, "..");
@@ -26,7 +28,8 @@ const CONFIG_FILE = path.join(app.getPath("userData"), "config.json");
 /* ---------------- 配置持久化（主进程侧：关闭行为等） ---------------- */
 function loadConfig() {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) || {};
+    // 容忍 UTF-8 BOM（外部工具写入的 JSON 可能带头，解析失败会触发配置被清空重写）
+    return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8").replace(/^\uFEFF/, "")) || {};
   } catch {
     return {};
   }
@@ -36,6 +39,17 @@ function saveConfig(cfg) {
   try {
     fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf8");
+  } catch {}
+}
+
+/* ---------------- 授权流程调试日志 ----------------
+ * 默认关闭：正式版不把 token / userinfo 落盘。
+ * 排查登录问题时在 userData/config.json 里加 "authDebug": true 再启动。
+ */
+function authLog(file, s) {
+  if (!loadConfig().authDebug) return;
+  try {
+    fs.appendFileSync(path.join(app.getPath("userData"), file), new Date().toISOString() + " " + s + "\n");
   } catch {}
 }
 
@@ -248,7 +262,7 @@ function huaweiLogin() {
           body,
         });
         const data = await res.json();
-        try { fs.appendFileSync(path.join(app.getPath("userData"), "hw-debug.log"), new Date().toISOString() + " token: " + JSON.stringify(data).slice(0, 500) + "\n"); } catch {}
+        authLog("hw-debug.log", "token: " + JSON.stringify(data).slice(0, 500));
         if (data.error) {
           return finish({ error: data.error_description || data.error });
         }
@@ -269,7 +283,7 @@ function huaweiLogin() {
             body: new URLSearchParams({ access_token: data.access_token }),
           });
           const info = await res2.json();
-          try { fs.appendFileSync(path.join(app.getPath("userData"), "hw-debug.log"), new Date().toISOString() + " userinfo: " + JSON.stringify(info).slice(0, 500) + "\n"); } catch {}
+          authLog("hw-debug.log", "userinfo: " + JSON.stringify(info).slice(0, 500));
           openID = info.openID || info.unionID || "";
           name = info.displayName || "";
           picture = info.headPictureURL || "";
@@ -287,9 +301,7 @@ function huaweiLogin() {
       }
     };
 
-    const hwLog = (s) => {
-      try { fs.appendFileSync(path.join(app.getPath("userData"), "hw-debug.log"), new Date().toISOString() + " " + s + "\n"); } catch {}
-    };
+    const hwLog = (s) => authLog("hw-debug.log", s);
 
     authWin.webContents.on("will-navigate", (_e, navUrl) => {
       if (!navUrl.startsWith(HW.redirectUri)) return;
@@ -323,8 +335,125 @@ function huaweiLogin() {
   });
 }
 
+/* ---------------- 谷歌账号 OAuth2.0 登录（系统浏览器 + 本机回环回调） ----------------
+ * Google 拒绝内嵌 webview（disallowed_useragent），桌面应用走官方推荐流：
+ * 主进程起一次性 127.0.0.1 回环 HTTP 服务 → shell.openExternal 拉系统浏览器 →
+ * 回调带 code 回本机 → 标准 PKCE(S256) 换 token（需带 client_secret，从 config.json 读）。
+ * client_id 从本地 config.json 的 googleClientId 读取（不入库）。
+ */
+const GG = {
+  authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenUrl: "https://oauth2.googleapis.com/token",
+  scope: "openid profile email",
+};
+
+function googleLogin() {
+  return new Promise((resolve) => {
+    const clientId = loadConfig().googleClientId || "";
+    if (!clientId) {
+      return resolve({ error: "未配置谷歌客户端 ID（config.json 的 googleClientId）" });
+    }
+
+    const ggLog = (s) => authLog("gg-debug.log", s);
+
+    const state = crypto.randomBytes(16).toString("hex");
+    const verifier = crypto.randomBytes(32).toString("base64url");
+    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+
+    let settled = false;
+    let server = null;
+    let timer = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (server) {
+        try { server.close(); } catch {}
+        server = null;
+      }
+      resolve(result);
+    };
+
+    // 5 分钟未完成授权视为取消
+    timer = setTimeout(() => finish({ error: "canceled" }), 5 * 60 * 1000);
+
+    const exchange = async (code, redirectUri) => {
+      try {
+        const body = new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          code_verifier: verifier,
+        });
+        // 谷歌桌面应用客户端换 token 同样要求 client_secret（与安卓客户端不同）；
+        // 密钥不入库，从本地 config.json 的 googleClientSecret 读取
+        const ggSecret = loadConfig().googleClientSecret || "";
+        if (ggSecret) body.set("client_secret", ggSecret);
+        const res = await fetch(GG.tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        });
+        const data = await res.json();
+        ggLog("token: " + JSON.stringify(data).slice(0, 500));
+        if (data.error) return finish({ error: data.error_description || data.error });
+        if (!data.id_token) return finish({ error: "谷歌未返回 id_token" });
+        const claims = parseIdToken(data.id_token);
+        const sub = claims.sub || "";
+        if (!sub) return finish({ error: "未能从 id_token 解析 sub" });
+        finish({
+          sub,
+          name: claims.name || "",
+          picture: claims.picture || "",
+          email: claims.email || "",
+          idToken: data.id_token,
+          refreshToken: data.refresh_token || "",
+        });
+      } catch (e) {
+        finish({ error: "网络错误：" + (e.message || e) });
+      }
+    };
+
+    server = http.createServer((req, res) => {
+      const u = new URL(req.url, "http://127.0.0.1");
+      if (u.pathname !== "/callback") {
+        res.writeHead(404);
+        return res.end();
+      }
+      const okHtml = '<!doctype html><meta charset="utf-8"><title>待办清单</title><body style="font-family:system-ui;text-align:center;padding-top:80px"><h3>谷歌账号授权成功</h3><p>可以关闭此页面，回到待办清单。</p></body>';
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(okHtml);
+      if (u.searchParams.get("state") !== state) return finish({ error: "授权状态校验失败，请重试" });
+      const err = u.searchParams.get("error");
+      if (err) return finish({ error: err });
+      const code = u.searchParams.get("code");
+      if (!code) return finish({ error: "未获取到授权码" });
+      const redirectUri = `http://127.0.0.1:${server.address().port}/callback`;
+      exchange(code, redirectUri);
+    });
+
+    server.on("error", (e) => finish({ error: "本机回调端口启动失败：" + (e.message || e) }));
+
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      const redirectUri = `http://127.0.0.1:${port}/callback`;
+      const url =
+        `${GG.authorizeUrl}?response_type=code&client_id=${encodeURIComponent(clientId)}` +
+        `&scope=${encodeURIComponent(GG.scope)}&state=${state}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&code_challenge=${challenge}&code_challenge_method=S256` +
+        `&access_type=offline&prompt=consent`;
+      ggLog("authorize: " + url.replace(/client_id=[^&]+/, "client_id=***"));
+      shell.openExternal(url).catch((e) => finish({ error: "无法打开浏览器：" + (e.message || e) }));
+    });
+  });
+}
+
 /* ---------------- IPC ---------------- */
 ipcMain.handle("hw-login", () => huaweiLogin());
+ipcMain.handle("google-login", () => googleLogin());
 
 ipcMain.on("store-read", (e) => {
   e.returnValue = readData();
